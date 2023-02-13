@@ -40,6 +40,13 @@ local config = { -- retained and over-written by the user's "settings" file
     window_pos_y        =   false,
 }
 
+local freeze = {
+    none = 0,
+    up = 1,
+    down = 2,
+    away_from_center = 3
+}
+
 local configuration = require("library.configuration")
 local clef = require("library.clef")
 local layer = require("library.layer")
@@ -198,6 +205,7 @@ function choose_destination_staff(source_staff)
         :AddString("Stems: normal")  -- == 0 (normal)
         :AddString("Stems: freeze up")  -- == 1 (up)
         :AddString("Stems: freeze down")  -- == 2 (down)
+        :AddString("Stems: away from center")  -- == 3 (away from center)
         :SetSelectedItem(config.freeze_up_down) -- 0-based index configure value
 
     local function set_check_state(state)
@@ -290,6 +298,19 @@ function fix_text_expressions(region)
     end
 end
 
+function get_away_from_center_up(region)
+    if config.freeze_up_down ~= freeze.away_from_center then return false end
+    local above_midline_net = 0
+    for entry in eachentry(region) do
+        if entry:IsNote() then
+            for note in each(entry) do
+                above_midline_net = above_midline_net + (note:CalcStaffPosition() >= -4 and 1 or -1)
+            end
+        end
+    end
+    return above_midline_net >= 0
+end
+
 function copy_to_destination(source_region, destination_staff)
     local destination_region = finale.FCMusicRegion()
     destination_region:SetRegion(source_region)
@@ -313,6 +334,14 @@ function copy_to_destination(source_region, destination_staff)
             layer.clear(destination_region, layer_number)
         end
     end
+
+    -- swap source_layer with cuenote_layer & fix clef
+    layer.swap(destination_region, config.source_layer, config.cuenote_layer)
+    if not config.copy_clef then
+        clef.restore_default_clef(destination_region.StartMeasure, destination_region.EndMeasure, destination_staff)
+    end
+
+    local away_from_center_up = get_away_from_center_up(destination_region)
 
     -- mute / set to % size / delete articulations? / freeze stems? / delete lyrics?
     for entry in eachentrysaved(destination_region) do
@@ -339,21 +368,44 @@ function copy_to_destination(source_region, destination_staff)
                 end
             end
         end
-        if config.freeze_up_down > 0 then -- frozen stems requested
+        if config.freeze_up_down > freeze.none then -- frozen stems requested
             entry.FreezeStem = true
-            entry.StemUp = (config.freeze_up_down == 1) -- "true" -> upstem, "false" -> downstem
+            local freeze_stem_up = {
+                true,
+                false,
+                away_from_center_up
+            }
+            entry.StemUp = freeze_stem_up[config.freeze_up_down]
         else
             entry.FreezeStem = false
         end
+
+        -- freeze ties and tuplets for "away from center" stems
+        if config.freeze_up_down == freeze.away_from_center then
+            if entry:IsNote() and entry:IsTied() then
+                for note in each(entry) do
+                    if note.Tie then
+                        local tie_mod = finale.FCTieMod(finale.TIEMODTYPE_TIESTART)
+                        tie_mod.TieDirection = away_from_center_up 
+                            and finale.TIEMODDIR_OVER 
+                            or finale.TIEMODDIR_UNDER
+                        tie_mod:SaveAt(note)
+                    end
+                end
+            end
+            if entry.TupletStartFlag then
+                for tuplet in each(entry:CreateTuplets()) do
+                    tuplet.PlacementMode = finale.TUPLETPLACEMENT_STEMSIDE
+                    tuplet:Save()
+                end
+            end
+        end
     end
-    -- swap source_layer with cuenote_layer & fix clef
-    layer.swap(destination_region, config.source_layer, config.cuenote_layer)
-    if not config.copy_clef then
-        clef.restore_default_clef(destination_region.StartMeasure, destination_region.EndMeasure, destination_staff)
-    end
+    
 
     -- delete or amend text expressions
     fix_text_expressions(destination_region)
+
     -- check smart shapes
     if not config.copy_smartshapes or not config.copy_slurs then
         local marks = finale.FCSmartShapeMeasureMarks()
@@ -362,6 +414,23 @@ function copy_to_destination(source_region, destination_staff)
             local shape = m:CreateSmartShape()
             if (shape:IsSlur() and not config.copy_slurs) or (not shape:IsSlur() and not config.copy_smartshapes) then
                 shape:DeleteData()
+            end
+        end
+    elseif config.copy_slurs and config.freeze_up_down == freeze.away_from_center then
+        local marks = finale.FCSmartShapeMeasureMarks()
+        marks:LoadAllForRegion(destination_region, true)
+        for m in each(marks) do
+            local shape = m:CreateSmartShape()
+            if shape:IsSolidSlur() then
+                shape:SetShapeType(away_from_center_up 
+                    and finale.SMARTSHAPE_SLURUP 
+                    or finale.SMARTSHAPE_SLURDOWN
+                )
+            elseif shape:IsDashedSlur() then
+                shape:SetShapeType(away_from_center_up 
+                    and finale.SMARTSHAPE_DASHEDSLURUP 
+                    or finale.SMARTSHAPE_DASHEDSLURDOWN
+                )
             end
         end
     end
