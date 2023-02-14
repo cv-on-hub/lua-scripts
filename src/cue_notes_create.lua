@@ -17,8 +17,20 @@ function plugindef()
         Under RGPLua (v0.58+) a new category is created automatically if needed. 
         To use with JWLua you must first create an Expression Category called "Cue Names". 
         ]]
+    finaleplugin.AdditionalMenuOptions = [[
+        Cue Notes Flip Frozen
+    ]]
+    finaleplugin.AdditionalUndoText = [[
+        Cue Notes Flip Frozen
+    ]]
+    finaleplugin.AdditionalPrefixes = [[
+        action = "flip"
+    ]]
+    
     return "Cue Notes Create...", "Cue Notes Create", "Copy as cue notes to another staff"
 end
+
+action = action or "create"
 
 local config = { -- retained and over-written by the user's "settings" file
     copy_articulations  =   false,
@@ -61,6 +73,7 @@ function show_error(error_code)
         empty_region = "Please select a region\nwith some notes in it!",
         no_notes_in_source_layer = "The music selected contains\nno notes in layer " .. config.source_layer,
         first_make_expression_category = "You must first create a new Text Expression Category called \""..config.cue_category_name.."\" containing at least one entry",
+        no_cue_notes = "The region selected contains \nno notes in layer " .. config.cuenote_layer
     }
     local msg = errors[error_code] or "Unknown error condition"
     finenv.UI():AlertNeutral("script: " .. plugindef(), msg)
@@ -311,6 +324,48 @@ function get_away_from_center_up(region)
     return above_midline_net >= 0
 end
 
+function freeze_tuplets_and_ties(entry, up)
+    if entry:IsNote() and entry:IsTied() then
+        for note in each(entry) do
+            if note.Tie then
+                local tie_mod = finale.FCTieMod(finale.TIEMODTYPE_TIESTART)
+                tie_mod.TieDirection = up
+                    and finale.TIEMODDIR_OVER 
+                    or finale.TIEMODDIR_UNDER
+                tie_mod:SaveAt(note)
+            end
+        end
+    end
+
+    if entry.TupletStartFlag then
+        for tuplet in each(entry:CreateTuplets()) do
+            tuplet.PlacementMode = finale.TUPLETPLACEMENT_STEMSIDE
+            tuplet:Save()
+        end
+    end
+end
+
+function freeze_slurs(region, up)
+    local marks = finale.FCSmartShapeMeasureMarks()
+    marks:LoadAllForRegion(region, true)
+    for m in each(marks) do
+        local shape = m:CreateSmartShape()
+        if shape:IsSolidSlur() then
+            shape:SetShapeType(up 
+                and finale.SMARTSHAPE_SLURUP 
+                or finale.SMARTSHAPE_SLURDOWN
+            )
+            shape:Save()
+        elseif shape:IsDashedSlur() then
+            shape:SetShapeType(up 
+                and finale.SMARTSHAPE_DASHEDSLURUP 
+                or finale.SMARTSHAPE_DASHEDSLURDOWN
+            )
+            shape:Save()
+        end
+    end
+end
+
 function copy_to_destination(source_region, destination_staff)
     local destination_region = finale.FCMusicRegion()
     destination_region:SetRegion(source_region)
@@ -382,23 +437,7 @@ function copy_to_destination(source_region, destination_staff)
 
         -- freeze ties and tuplets for "away from center" stems
         if config.freeze_up_down == freeze.away_from_center then
-            if entry:IsNote() and entry:IsTied() then
-                for note in each(entry) do
-                    if note.Tie then
-                        local tie_mod = finale.FCTieMod(finale.TIEMODTYPE_TIESTART)
-                        tie_mod.TieDirection = away_from_center_up 
-                            and finale.TIEMODDIR_OVER 
-                            or finale.TIEMODDIR_UNDER
-                        tie_mod:SaveAt(note)
-                    end
-                end
-            end
-            if entry.TupletStartFlag then
-                for tuplet in each(entry:CreateTuplets()) do
-                    tuplet.PlacementMode = finale.TUPLETPLACEMENT_STEMSIDE
-                    tuplet:Save()
-                end
-            end
+            freeze_tuplets_and_ties(entry, away_from_center_up)            
         end
     end
     
@@ -418,24 +457,7 @@ function copy_to_destination(source_region, destination_staff)
         end
     end
     if config.copy_slurs and config.freeze_up_down == freeze.away_from_center then
-        local marks = finale.FCSmartShapeMeasureMarks()
-        marks:LoadAllForRegion(destination_region, true)
-        for m in each(marks) do
-            local shape = m:CreateSmartShape()
-            if shape:IsSolidSlur() then
-                shape:SetShapeType(away_from_center_up 
-                    and finale.SMARTSHAPE_SLURUP 
-                    or finale.SMARTSHAPE_SLURDOWN
-                )
-                shape:Save()
-            elseif shape:IsDashedSlur() then
-                shape:SetShapeType(away_from_center_up 
-                    and finale.SMARTSHAPE_DASHEDSLURUP 
-                    or finale.SMARTSHAPE_DASHEDSLURDOWN
-                )
-                shape:Save()
-            end
-        end
+        freeze_slurs(destination_region, away_from_center_up)
     end
 
     -- create whole-note rest in rest_layer in each measure
@@ -555,4 +577,39 @@ function create_cue_notes()
     source_region:SetInDocument()
 end
 
-create_cue_notes() -- go and do it already
+function flip_cue_notes()
+    local region = finenv.Region()
+    if not region_contains_notes(region, config.cuenote_layer) then
+        show_error("no_cue_notes")
+        return
+    end
+
+    local zero_based_cue_layer = config.cuenote_layer - 1
+    for staff = region.StartStaff, region.EndStaff do
+        local freeze_up = nil
+        local this_layer = finale.FCNoteEntryLayer(zero_based_cue_layer, staff, region.StartMeasure, region.EndMeasure)
+        this_layer:Load()        
+        for entry in each(this_layer) do
+            if entry:IsNote() and not entry.FreezeStem then goto next_staff end      
+            entry.StemUp = not entry.StemUp
+            if freeze_up == nil then freeze_up = entry.StemUp end
+            freeze_tuplets_and_ties(entry, freeze_up)
+        end
+        this_layer:Save()
+
+        local staff_region = mixin.FCMMusicRegion()
+            :SetRegion(region)
+            :SetStartStaff(staff)
+            :SetEndStaff(staff)
+        freeze_slurs(staff_region, freeze_up)      
+          
+        ::next_staff::
+    end
+end
+
+
+if action == "flip" then
+    flip_cue_notes()
+else
+    create_cue_notes() -- go and do it already
+end
