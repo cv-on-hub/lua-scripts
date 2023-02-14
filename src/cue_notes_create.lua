@@ -416,7 +416,8 @@ function copy_to_destination(source_region, destination_staff)
                 shape:DeleteData()
             end
         end
-    elseif config.copy_slurs and config.freeze_up_down == freeze.away_from_center then
+    end
+    if config.copy_slurs and config.freeze_up_down == freeze.away_from_center then
         local marks = finale.FCSmartShapeMeasureMarks()
         marks:LoadAllForRegion(destination_region, true)
         for m in each(marks) do
@@ -426,11 +427,13 @@ function copy_to_destination(source_region, destination_staff)
                     and finale.SMARTSHAPE_SLURUP 
                     or finale.SMARTSHAPE_SLURDOWN
                 )
+                shape:Save()
             elseif shape:IsDashedSlur() then
                 shape:SetShapeType(away_from_center_up 
                     and finale.SMARTSHAPE_DASHEDSLURUP 
                     or finale.SMARTSHAPE_DASHEDSLURDOWN
                 )
+                shape:Save()
             end
         end
     end
