@@ -76,7 +76,7 @@ function show_error(error_code)
         no_cue_notes = "The region selected contains \nno notes in layer " .. config.cuenote_layer
     }
     local msg = errors[error_code] or "Unknown error condition"
-    finenv.UI():AlertNeutral("script: " .. plugindef(), msg)
+    finenv.UI():AlertNeutral(msg, "script: " .. plugindef())
     return -1
 end
 
