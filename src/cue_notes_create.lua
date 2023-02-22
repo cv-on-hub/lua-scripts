@@ -44,7 +44,7 @@ local config = { -- retained and over-written by the user's "settings" file
     source_layer        =   1,     -- layer the cue comes from
     cuenote_layer       =   3,     -- layer the cue ends up
     rest_layer          =   1,     -- layer for default wholenote rest
-    freeze_up_down      =   0,     -- "0" for no stem freezing, "1" for up, "2" for down, "3" for away from center
+    freeze_up_down      =   0,     -- "0" for no stem freezing, "1" for up, "2" for down, "3" for away from middle
     -- if creating a new "Cue Names" category ...
     cue_category_name   =   "Cue Names",
     cue_font_smaller    =   1, -- how many points smaller than the standard technique expression
@@ -56,7 +56,7 @@ local freeze = {
     none = 0,
     up = 1,
     down = 2,
-    away_from_center = 3
+    away_from_middle = 3
 }
 
 local configuration = require("library.configuration")
@@ -218,7 +218,7 @@ function choose_destination_staff(source_staff)
         :AddString("Stems: normal")  -- == 0 (normal)
         :AddString("Stems: freeze up")  -- == 1 (up)
         :AddString("Stems: freeze down")  -- == 2 (down)
-        :AddString("Stems: away from center")  -- == 3 (away from center)
+        :AddString("Stems: away from middle")  -- == 3 (away from middle)
         :SetSelectedItem(config.freeze_up_down) -- 0-based index configure value
 
     local function set_check_state(state)
@@ -311,8 +311,8 @@ function fix_text_expressions(region)
     end
 end
 
-function get_away_from_center_up(region)
-    if config.freeze_up_down ~= freeze.away_from_center then return false end
+function get_away_from_middle_is_up(region)
+    if config.freeze_up_down ~= freeze.away_from_middle then return false end
     local above_midline_net = 0
     for entry in eachentry(region) do
         if entry:IsNote() then
@@ -396,7 +396,7 @@ function copy_to_destination(source_region, destination_staff)
         clef.restore_default_clef(destination_region.StartMeasure, destination_region.EndMeasure, destination_staff)
     end
 
-    local away_from_center_up = get_away_from_center_up(destination_region)
+    local away_from_middle_is_up = get_away_from_middle_is_up(destination_region)
 
     -- mute / set to % size / delete articulations? / freeze stems? / delete lyrics?
     for entry in eachentrysaved(destination_region) do
@@ -428,16 +428,16 @@ function copy_to_destination(source_region, destination_staff)
             local freeze_stem_up = {
                 true,
                 false,
-                away_from_center_up
+                away_from_middle_is_up
             }
             entry.StemUp = freeze_stem_up[config.freeze_up_down]
         else
             entry.FreezeStem = false
         end
 
-        -- freeze ties and tuplets for "away from center" stems
-        if config.freeze_up_down == freeze.away_from_center then
-            freeze_tuplets_and_ties(entry, away_from_center_up)            
+        -- freeze ties and tuplets for "away from middle" stems
+        if config.freeze_up_down == freeze.away_from_middle then
+            freeze_tuplets_and_ties(entry, away_from_middle_is_up)            
         end
     end
     
@@ -456,8 +456,8 @@ function copy_to_destination(source_region, destination_staff)
             end
         end
     end
-    if config.copy_slurs and config.freeze_up_down == freeze.away_from_center then
-        freeze_slurs(destination_region, away_from_center_up)
+    if config.copy_slurs and config.freeze_up_down == freeze.away_from_middle then
+        freeze_slurs(destination_region, away_from_middle_is_up)
     end
 
     -- create whole-note rest in rest_layer in each measure
