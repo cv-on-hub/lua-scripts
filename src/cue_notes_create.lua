@@ -313,15 +313,15 @@ end
 
 function get_away_from_middle_is_up(region)
     if config.freeze_up_down ~= freeze.away_from_middle then return false end
-    local above_midline_net = 0
+    local total_displacement = 0
     for entry in eachentry(region) do
         if entry:IsNote() then
             for note in each(entry) do
-                above_midline_net = above_midline_net + (note:CalcStaffPosition() >= -4 and 1 or -1)
+                total_displacement = total_displacement + (note:CalcStaffPosition() + 4)                
             end
         end
     end
-    return above_midline_net >= 0
+    return total_displacement >= 0
 end
 
 function freeze_tuplets_and_ties(entry, up)
