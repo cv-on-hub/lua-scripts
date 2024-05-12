@@ -4402,369 +4402,6 @@ package.preload["library.mixin"] = package.preload["library.mixin"] or function(
     end
     return mixin
 end
-package.preload["library.enigma_string"] = package.preload["library.enigma_string"] or function()
-
-    local enigma_string = {}
-    local starts_with_font_command = function(string)
-        local text_cmds = {"^font", "^Font", "^fontMus", "^fontTxt", "^fontNum", "^size", "^nfx"}
-        for _, text_cmd in ipairs(text_cmds) do
-            if string:StartsWith(text_cmd) then
-                return true
-            end
-        end
-        return false
-    end
-
-
-    function enigma_string.trim_first_enigma_font_tags(string)
-        local font_info = finale.FCFontInfo()
-        local found_tag = false
-        while true do
-            if not starts_with_font_command(string) then
-                break
-            end
-            local end_of_tag = string:FindFirst(")")
-            if end_of_tag < 0 then
-                break
-            end
-            local font_tag = finale.FCString()
-            if string:SplitAt(end_of_tag, font_tag, nil, true) then
-                font_info:ParseEnigmaCommand(font_tag)
-            end
-            string:DeleteCharactersAt(0, end_of_tag + 1)
-            found_tag = true
-        end
-        if found_tag then
-            return font_info
-        end
-        return nil
-    end
-
-    function enigma_string.change_first_string_font(string, font_info)
-        local final_text = font_info:CreateEnigmaString(nil)
-        local current_font_info = enigma_string.trim_first_enigma_font_tags(string)
-        if (current_font_info == nil) or not font_info:IsIdenticalTo(current_font_info) then
-            final_text:AppendString(string)
-            string:SetString(final_text)
-            return true
-        end
-        return false
-    end
-
-    function enigma_string.change_first_text_block_font(text_block, font_info)
-        local new_text = text_block:CreateRawTextString()
-        if enigma_string.change_first_string_font(new_text, font_info) then
-            text_block:SaveRawTextString(new_text)
-            return true
-        end
-        return false
-    end
-
-
-
-    function enigma_string.change_string_font(string, font_info)
-        local final_text = font_info:CreateEnigmaString(nil)
-        string:TrimEnigmaFontTags()
-        final_text:AppendString(string)
-        string:SetString(final_text)
-    end
-
-    function enigma_string.change_text_block_font(text_block, font_info)
-        local new_text = text_block:CreateRawTextString()
-        enigma_string.change_string_font(new_text, font_info)
-        text_block:SaveRawTextString(new_text)
-    end
-
-    function enigma_string.remove_inserts(fcstring, replace_with_generic, convert_tags_to_literals)
-        local text_cmds = {
-            "^arranger", "^composer", "^copyright", "^date", "^description", "^fdate", "^filename", "^lyricist", "^page",
-            "^partname", "^perftime", "^subtitle", "^time", "^title", "^totpages", "^value", "^control", "^pass"
-        }
-        local lua_string = fcstring.LuaString
-        for _, text_cmd in ipairs(text_cmds) do
-            local starts_at = string.find(lua_string, text_cmd, 1, true)
-            while starts_at ~= nil do
-                local replace_with = ""
-                if replace_with_generic then
-                    if convert_tags_to_literals then
-                        replace_with = "^" .. text_cmd
-                    else
-                        replace_with = "[" .. string.sub(text_cmd, 2) .. "]"
-                    end
-                end
-                local next_at = starts_at + #text_cmd
-                if not replace_with_generic or not convert_tags_to_literals then
-                    next_at = string.find(lua_string, ")", next_at, true) + 1 or starts_at
-                end
-                lua_string = string.sub(lua_string, 1, starts_at - 1) .. replace_with .. string.sub(lua_string, next_at)
-                starts_at = string.find(lua_string, text_cmd, starts_at + #replace_with, true)
-            end
-        end
-        fcstring.LuaString = lua_string
-    end
-
-    function enigma_string.expand_value_tag(fcstring, value_num)
-        value_num = math.floor(value_num + 0.5)
-        fcstring.LuaString = fcstring.LuaString:gsub("%^value%(%)", tostring(value_num))
-    end
-
-    function enigma_string.calc_text_advance_width(inp_string)
-        local accumulated_string = ""
-        local accumulated_width = 0
-        local enigma_strings = inp_string:CreateEnigmaStrings(true)
-        for str in each(enigma_strings) do
-            accumulated_string = accumulated_string .. str.LuaString
-            if string.sub(str.LuaString, 1, 1) ~= "^" then
-                local fcstring = finale.FCString()
-                local text_met = finale.FCTextMetrics()
-                fcstring.LuaString = accumulated_string
-                local font_info = fcstring:CreateLastFontInfo()
-                fcstring.LuaString = str.LuaString
-                fcstring:TrimEnigmaTags()
-                text_met:LoadString(fcstring, font_info, 100)
-                accumulated_width = accumulated_width + text_met:GetAdvanceWidthEVPUs()
-            end
-        end
-        return accumulated_width
-    end
-    return enigma_string
-end
-package.preload["library.expression"] = package.preload["library.expression"] or function()
-
-    local expression = {}
-    local library = require("library.general_library")
-    local note_entry = require("library.note_entry")
-    local enigma_string = require("library.enigma_string")
-
-    function expression.get_music_region(exp_assign)
-        if not exp_assign:IsSingleStaffAssigned() then
-            return nil
-        end
-        local exp_region = finale.FCMusicRegion()
-        exp_region:SetCurrentSelection()
-        exp_region.StartStaff = exp_assign.Staff
-        exp_region.EndStaff = exp_assign.Staff
-        exp_region.StartMeasure = exp_assign.Measure
-        exp_region.EndMeasure = exp_assign.Measure
-        exp_region.StartMeasurePos = exp_assign.MeasurePos
-        exp_region.EndMeasurePos = exp_assign.MeasurePos
-        return exp_region
-    end
-
-    function expression.get_associated_entry(exp_assign)
-        local exp_region = expression.get_music_region(exp_assign)
-        if nil == exp_region then
-            return nil
-        end
-        for entry in eachentry(exp_region) do
-            if (0 == exp_assign.LayerAssignment) or (entry.LayerNumber == exp_assign.LayerAssignment) then
-                if not entry:GetGraceNote() then
-                    return entry
-                end
-            end
-        end
-        return nil
-    end
-
-    function expression.calc_handle_offset_for_smart_shape(exp_assign)
-        local manual_horizontal = exp_assign.HorizontalPos
-        local def_horizontal = 0
-        local alignment_offset = 0
-        local exp_def = exp_assign:CreateTextExpressionDef()
-        if nil ~= exp_def then
-            def_horizontal = exp_def.HorizontalOffset
-        end
-        local exp_entry = expression.get_associated_entry(exp_assign)
-        local ent_position = exp_entry and exp_entry.ManualPosition or 0
-        if (nil ~= exp_entry) and (nil ~= exp_def) then
-            if finale.ALIGNHORIZ_LEFTOFALLNOTEHEAD == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_left_of_all_noteheads(exp_entry)
-            elseif finale.ALIGNHORIZ_LEFTOFPRIMARYNOTEHEAD == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_left_of_primary_notehead(exp_entry)
-            elseif finale.ALIGNHORIZ_STEM == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_stem_offset(exp_entry)
-            elseif finale.ALIGNHORIZ_CENTERPRIMARYNOTEHEAD == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_center_of_primary_notehead(exp_entry)
-            elseif finale.ALIGNHORIZ_CENTERALLNOTEHEADS == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_center_of_all_noteheads(exp_entry)
-            elseif finale.ALIGNHORIZ_RIGHTALLNOTEHEADS == exp_def.HorizontalAlignmentPoint then
-                alignment_offset = note_entry.calc_right_of_all_noteheads(exp_entry)
-            end
-        end
-        return (manual_horizontal + def_horizontal + ent_position + alignment_offset)
-    end
-
-    function expression.calc_text_width(expression_def, expand_tags)
-        expand_tags = expand_tags or false
-        local fcstring = expression_def:CreateTextString()
-        if expand_tags then
-            enigma_string.expand_value_tag(fcstring, expression_def:GetPlaybackTempoValue())
-        end
-        local retval = enigma_string.calc_text_advance_width(fcstring)
-        return retval
-    end
-
-    function expression.is_for_current_part(exp_assign, current_part)
-        current_part = current_part or library.get_current_part()
-        if current_part:IsScore() and exp_assign.ScoreAssignment then
-            return true
-        elseif current_part:IsPart() and exp_assign.PartAssignment then
-            return true
-        end
-        return false
-    end
-
-    function expression.is_dynamic(exp)
-        if not exp:IsShape() and exp.Visible and exp.StaffGroupID == 0 then
-            local cat_id = exp:CreateTextExpressionDef().CategoryID
-            if cat_id == finale.DEFAULTCATID_DYNAMICS then
-                return true
-            end
-            local cd = finale.FCCategoryDef()
-            cd:Load(cat_id)
-            if cd.Type == finale.DEFAULTCATID_DYNAMICS then
-                return true
-            end
-            local exp_name = cd:CreateName().LuaString
-            if string.find(exp_name, "Dynamic") or string.find(exp_name, "dynamic") then
-                return true
-            end
-        end
-        return false
-    end
-
-    function expression.resync_expressions_for_category(category_id)
-        for expression_def in loadall(finale.FCTextExpressionDefs()) do
-            if expression_def.CategoryID == category_id then
-                expression.resync_to_category(expression_def)
-            end
-        end
-    end
-
-    function expression.resync_to_category(expression_def)
-        local cat = finale.FCCategoryDef()
-        cat:Load(expression_def.CategoryID)
-
-        if expression_def.UseCategoryFont then
-            local str = expression_def:CreateTextString()
-            if str then
-                str:ReplaceCategoryFonts(cat, finale.CATEGORYMODE_TEXT, false)
-                str:ReplaceCategoryFonts(cat, finale.CATEGORYMODE_MUSIC, false)
-                str:ReplaceCategoryFonts(cat, finale.CATEGORYMODE_NUMBER, false)
-                expression_def:SaveTextString(str)
-            end
-        end
-        if expression_def.UseCategoryPos then
-            local pos_props = {
-                "HorizontalJustification",
-                "HorizontalAlignmentPoint",
-                "HorizontalOffset",
-                "VerticalAlignmentPoint",
-                "VerticalBaselineOffset",
-                "VerticalEntryOffset"
-            }
-            for _, prop in pairs(pos_props) do
-                expression_def[prop] = cat[prop]
-            end
-            expression_def:Save()
-        end
-    end
-    return expression
-end
-package.preload["library.layer"] = package.preload["library.layer"] or function()
-
-    local layer = {}
-
-    function layer.copy(region, source_layer, destination_layer, clone_articulations)
-        local start = region.StartMeasure
-        local stop = region.EndMeasure
-        local sysstaves = finale.FCSystemStaves()
-        sysstaves:LoadAllForRegion(region)
-        source_layer = source_layer - 1
-        destination_layer = destination_layer - 1
-        for sysstaff in each(sysstaves) do
-            local staffNum = sysstaff.Staff
-            local noteentry_source_layer = finale.FCNoteEntryLayer(source_layer, staffNum, start, stop)
-            noteentry_source_layer:SetUseVisibleLayer(false)
-            noteentry_source_layer:Load()
-            local noteentry_destination_layer = noteentry_source_layer:CreateCloneEntries(
-                destination_layer, staffNum, start)
-            noteentry_destination_layer:Save()
-            noteentry_destination_layer:CloneTuplets(noteentry_source_layer)
-
-            if clone_articulations and noteentry_source_layer.Count == noteentry_destination_layer.Count then
-                for index = 0, noteentry_destination_layer.Count - 1 do
-                    local source_entry = noteentry_source_layer:GetItemAt(index)
-                    local destination_entry = noteentry_destination_layer:GetItemAt(index)
-                    local source_artics = source_entry:CreateArticulations()
-                    for articulation in each (source_artics) do
-                        articulation:SetNoteEntry(destination_entry)
-                        articulation:SaveNew()
-                    end
-                end
-            end
-            noteentry_destination_layer:Save()
-        end
-    end
-
-    function layer.clear(region, layer_to_clear)
-        layer_to_clear = layer_to_clear - 1
-        local start = region.StartMeasure
-        local stop = region.EndMeasure
-        local sysstaves = finale.FCSystemStaves()
-        sysstaves:LoadAllForRegion(region)
-        for sysstaff in each(sysstaves) do
-            local staffNum = sysstaff.Staff
-            local noteentry_layer = finale.FCNoteEntryLayer(layer_to_clear, staffNum, start, stop)
-            noteentry_layer:SetUseVisibleLayer(false)
-            noteentry_layer:Load()
-            noteentry_layer:ClearAllEntries()
-        end
-    end
-
-    function layer.swap(region, swap_a, swap_b)
-
-        swap_a = swap_a - 1
-        swap_b = swap_b - 1
-        for measure, staff_number in eachcell(region) do
-            local cell_frame_hold = finale.FCCellFrameHold()
-            cell_frame_hold:ConnectCell(finale.FCCell(measure, staff_number))
-            local loaded = cell_frame_hold:Load()
-            local cell_clef_changes = loaded and cell_frame_hold.IsClefList and cell_frame_hold:CreateCellClefChanges() or nil
-            local  noteentry_layer_one = finale.FCNoteEntryLayer(swap_a, staff_number, measure, measure)
-            noteentry_layer_one:SetUseVisibleLayer(false)
-            noteentry_layer_one:Load()
-            noteentry_layer_one.LayerIndex = swap_b
-
-            local  noteentry_layer_two = finale.FCNoteEntryLayer(swap_b, staff_number, measure, measure)
-            noteentry_layer_two:SetUseVisibleLayer(false)
-            noteentry_layer_two:Load()
-            noteentry_layer_two.LayerIndex = swap_a
-            noteentry_layer_one:Save()
-            noteentry_layer_two:Save()
-            if loaded then
-                local new_cell_frame_hold = finale.FCCellFrameHold()
-                new_cell_frame_hold:ConnectCell(finale.FCCell(measure, staff_number))
-                if new_cell_frame_hold:Load() then
-                    if cell_frame_hold.IsClefList then
-                        if new_cell_frame_hold.SetCellClefChanges then
-                            new_cell_frame_hold:SetCellClefChanges(cell_clef_changes)
-                        end
-
-                    else
-                        new_cell_frame_hold.ClefIndex = cell_frame_hold.ClefIndex
-                    end
-                    new_cell_frame_hold:Save()
-                end
-            end
-        end
-    end
-
-    function layer.max_layers()
-        return finale.FCLayerPrefs.GetMaxLayers and finale.FCLayerPrefs.GetMaxLayers() or 4
-    end
-    return layer
-end
 package.preload["library.utils"] = package.preload["library.utils"] or function()
 
     local utils = {}
@@ -5035,314 +4672,6 @@ package.preload["library.utils"] = package.preload["library.utils"] or function(
         return mac_value
     end
     return utils
-end
-package.preload["library.note_entry"] = package.preload["library.note_entry"] or function()
-
-    local note_entry = {}
-
-    function note_entry.get_music_region(entry)
-        local exp_region = finale.FCMusicRegion()
-        exp_region:SetCurrentSelection()
-        exp_region.StartStaff = entry.Staff
-        exp_region.EndStaff = entry.Staff
-        exp_region.StartMeasure = entry.Measure
-        exp_region.EndMeasure = entry.Measure
-        exp_region.StartMeasurePos = entry.MeasurePos
-        exp_region.EndMeasurePos = entry.MeasurePos
-        return exp_region
-    end
-
-
-    local use_or_get_passed_in_entry_metrics = function(entry, entry_metrics)
-        if entry_metrics then
-            return entry_metrics, false
-        end
-        entry_metrics = finale.FCEntryMetrics()
-        if entry_metrics:Load(entry) then
-            return entry_metrics, true
-        end
-        return nil, false
-    end
-
-    function note_entry.get_evpu_notehead_height(entry)
-        local highest_note = entry:CalcHighestNote(nil)
-        local lowest_note = entry:CalcLowestNote(nil)
-        local evpu_height = (2 + highest_note:CalcStaffPosition() - lowest_note:CalcStaffPosition()) * 12
-        return evpu_height
-    end
-
-    function note_entry.get_top_note_position(entry, entry_metrics)
-        local retval = -math.huge
-        local loaded_here
-        entry_metrics, loaded_here = use_or_get_passed_in_entry_metrics(entry, entry_metrics)
-        if nil == entry_metrics then
-            return retval
-        end
-        if not entry:CalcStemUp() then
-            retval = entry_metrics.TopPosition
-        else
-            local cell_metrics = finale.FCCell(entry.Measure, entry.Staff):CreateCellMetrics()
-            if nil ~= cell_metrics then
-                local evpu_height = note_entry.get_evpu_notehead_height(entry)
-                local scaled_height = math.floor(((cell_metrics.StaffScaling * evpu_height) / 10000) + 0.5)
-                retval = entry_metrics.BottomPosition + scaled_height
-                cell_metrics:FreeMetrics()
-            end
-        end
-        if loaded_here then
-            entry_metrics:FreeMetrics()
-        end
-        return retval
-    end
-
-    function note_entry.get_bottom_note_position(entry, entry_metrics)
-        local retval = math.huge
-        local loaded_here
-        entry_metrics, loaded_here = use_or_get_passed_in_entry_metrics(entry, entry_metrics)
-        if nil == entry_metrics then
-            return retval
-        end
-        if entry:CalcStemUp() then
-            retval = entry_metrics.BottomPosition
-        else
-            local cell_metrics = finale.FCCell(entry.Measure, entry.Staff):CreateCellMetrics()
-            if nil ~= cell_metrics then
-                local evpu_height = note_entry.get_evpu_notehead_height(entry)
-                local scaled_height = math.floor(((cell_metrics.StaffScaling * evpu_height) / 10000) + 0.5)
-                retval = entry_metrics.TopPosition - scaled_height
-                cell_metrics:FreeMetrics()
-            end
-        end
-        if loaded_here then
-            entry_metrics:FreeMetrics()
-        end
-        return retval
-    end
-
-    function note_entry.calc_widths(entry)
-        local left_width = 0
-        local right_width = 0
-        for note in each(entry) do
-            local note_width = note:CalcNoteheadWidth()
-            if note_width > 0 then
-                if note:CalcRightsidePlacement() then
-                    if note_width > right_width then
-                        right_width = note_width
-                    end
-                else
-                    if note_width > left_width then
-                        left_width = note_width
-                    end
-                end
-            end
-        end
-        return left_width, right_width
-    end
-
-
-
-
-    function note_entry.calc_left_of_all_noteheads(entry)
-        if entry:CalcStemUp() then
-            return 0
-        end
-        local left, _ = note_entry.calc_widths(entry)
-        return -left
-    end
-
-    function note_entry.calc_left_of_primary_notehead(_entry)
-        return 0
-    end
-
-    function note_entry.calc_center_of_all_noteheads(entry)
-        local left, right = note_entry.calc_widths(entry)
-        local width_centered = (left + right) / 2
-        if not entry:CalcStemUp() then
-            width_centered = width_centered - left
-        end
-        return width_centered
-    end
-
-    function note_entry.calc_center_of_primary_notehead(entry)
-        local left, right = note_entry.calc_widths(entry)
-        if entry:CalcStemUp() then
-            return left / 2
-        end
-        return right / 2
-    end
-
-    function note_entry.calc_stem_offset(entry)
-        if not entry:CalcStemUp() then
-            return 0
-        end
-        local left, _ = note_entry.calc_widths(entry)
-        return left
-    end
-
-    function note_entry.calc_right_of_all_noteheads(entry)
-        local left, right = note_entry.calc_widths(entry)
-        if entry:CalcStemUp() then
-            return left + right
-        end
-        return right
-    end
-
-    function note_entry.calc_note_at_index(entry, note_index)
-        local x = 0
-        for note in each(entry) do
-            if x == note_index then
-                return note
-            end
-            x = x + 1
-        end
-        return nil
-    end
-
-    function note_entry.stem_sign(entry)
-        if entry:CalcStemUp() then
-            return 1
-        end
-        return -1
-    end
-
-    function note_entry.duplicate_note(note)
-        local new_note = note.Entry:AddNewNote()
-        if nil ~= new_note then
-            new_note.Displacement = note.Displacement
-            new_note.RaiseLower = note.RaiseLower
-            new_note.Tie = note.Tie
-            new_note.TieBackwards = note.TieBackwards
-        end
-        return new_note
-    end
-
-    function note_entry.delete_note(note)
-        local entry = note.Entry
-        if nil == entry then
-            return false
-        end
-
-        finale.FCAccidentalMod():EraseAt(note)
-        finale.FCCrossStaffMod():EraseAt(note)
-        finale.FCDotMod():EraseAt(note)
-        finale.FCNoteheadMod():EraseAt(note)
-        finale.FCPercussionNoteMod():EraseAt(note)
-        finale.FCTablatureNoteMod():EraseAt(note)
-        finale.FCPerformanceMod():EraseAt(note)
-        if finale.FCTieMod then
-            finale.FCTieMod(finale.TIEMODTYPE_TIESTART):EraseAt(note)
-            finale.FCTieMod(finale.TIEMODTYPE_TIEEND):EraseAt(note)
-        end
-        return entry:DeleteNote(note)
-    end
-
-    function note_entry.make_rest(entry)
-        local articulations = entry:CreateArticulations()
-        for articulation in each(articulations) do
-            articulation:DeleteData()
-        end
-        if entry:IsNote() then
-            while entry.Count > 0 do
-                note_entry.delete_note(entry:GetItemAt(0))
-            end
-        end
-        entry:MakeRest()
-        return true
-    end
-
-    function note_entry.calc_pitch_string(note)
-        local pitch_string = finale.FCString()
-        local cell = finale.FCCell(note.Entry.Measure, note.Entry.Staff)
-        local key_signature = cell:GetKeySignature()
-        note:GetString(pitch_string, key_signature, false, false)
-        return pitch_string
-    end
-
-    function note_entry.calc_spans_number_of_octaves(entry)
-        local top_note = entry:CalcHighestNote(nil)
-        local bottom_note = entry:CalcLowestNote(nil)
-        local displacement_diff = top_note.Displacement - bottom_note.Displacement
-        local num_octaves = math.ceil(displacement_diff / 7)
-        return num_octaves
-    end
-
-    function note_entry.add_augmentation_dot(entry)
-
-        entry.Duration = bit32.bor(entry.Duration, bit32.rshift(entry.Duration, 1))
-    end
-
-    function note_entry.remove_augmentation_dot(entry)
-        if entry.Duration <= 0 then
-            return false
-        end
-        local lowest_order_bit = 1
-        if bit32.band(entry.Duration, lowest_order_bit) == 0 then
-
-            lowest_order_bit = bit32.bxor(bit32.band(entry.Duration, entry.Duration - 1), entry.Duration)
-        end
-
-        local new_value = bit32.band(entry.Duration, bit32.bnot(lowest_order_bit))
-        if new_value ~= 0 then
-            entry.Duration = new_value
-            return true
-        end
-        return false
-    end
-
-    function note_entry.get_next_same_v(entry)
-        if entry.NextSameVInFrame then
-            return entry:NextSameVInFrame()
-        end
-        local next_entry = entry:Next()
-        if entry.Voice2 then
-            if (nil ~= next_entry) and next_entry.Voice2 then
-                return next_entry
-            end
-            return nil
-        end
-        if entry.Voice2Launch then
-            while (nil ~= next_entry) and next_entry.Voice2 do
-                next_entry = next_entry:Next()
-            end
-        end
-        return next_entry
-    end
-
-    function note_entry.hide_stem(entry)
-        local stem = finale.FCCustomStemMod()
-        stem:SetNoteEntry(entry)
-        stem:UseUpStemData(entry:CalcStemUp())
-        if stem:LoadFirst() then
-            stem.ShapeID = 0
-            stem:Save()
-        else
-            stem.ShapeID = 0
-            stem:SaveNew()
-        end
-    end
-
-    function note_entry.rest_offset(entry, offset)
-        if entry:IsNote() then
-            return false
-        end
-        local rest_prop = "OtherRestPosition"
-        if entry.Duration >= finale.BREVE then
-            rest_prop = "DoubleWholeRestPosition"
-        elseif entry.Duration >= finale.WHOLE_NOTE then
-            rest_prop = "WholeRestPosition"
-        elseif entry.Duration >= finale.HALF_NOTE then
-            rest_prop = "HalfRestPosition"
-        end
-        entry:MakeMovableRest()
-        local rest = entry:GetItemAt(0)
-        local curr_staffpos = rest:CalcStaffPosition()
-        local staff_spec = finale.FCCurrentStaffSpec()
-        staff_spec:LoadForEntry(entry)
-        local total_offset = staff_spec[rest_prop] + offset - curr_staffpos
-        entry:SetRestDisplacement(entry:GetRestDisplacement() + total_offset)
-        return true
-    end
-    return note_entry
 end
 package.preload["library.client"] = package.preload["library.client"] or function()
 
@@ -5872,40 +5201,21 @@ package.preload["library.general_library"] = package.preload["library.general_li
     return library
 end
 function plugindef()
-    finaleplugin.RequireSelection = true
+    finaleplugin.RequireSelection = false
+    finaleplugin.HandlesUndo = false
     finaleplugin.Author = "Carl Vine"
-    finaleplugin.AuthorURL = "https://carlvine.com/lua"
-    finaleplugin.Copyright = "CC0 https://creativecommons.org/publicdomain/zero/1.0/"
-    finaleplugin.Version = "0.95"
-    finaleplugin.Date = "2024/04/22"
-    finaleplugin.MinJWLuaVersion = 0.70
-	finaleplugin.Notes = [[ 
-        This script presents an alphabetical list of 24 individual types 
-        of data to delete, each line beginning with a configurable _hotkey_. 
-        Call the script, type the _hotkey_ and hit [Enter] or [Return]. 
-        Half of the datatypes can be filtered by layer.
-
-        __Delete Independently__: 
-
-        > Articulations• | Articulations on Rests• | Chords | Cross Staff Entries•  
-        > Custom Lines | Dynamics• | Expressions (Not Dynamics)•  
-        > Expressions (All)• | Expressions (Measure-Attached) | Glissandos  
-        > Hairpins | Lyrics• | MIDI Continuous Data | MIDI Note Data•  
-        > Note Position Offsets• | Notehead Modifications• | Notes•  
-        > Secondary Beam Breaks• | Slurs | Smart Shapes (Note Attached)•  
-        > Smart Shapes (Beat Attached) | Smart Shapes (All) | Staff Styles  
-        > Tuplets• | User Selected... | (• = filter by layer)
-
-        To delete the same data as last time without a confirmation dialog 
-        hold down [Shift] when starting the script. 
-        The layer number is "clamped" to a single character so to change 
-        layer just type a new number - [Delete] key not needed.
-
-        __Expression Layers__  
-        Expressions are not fixed to particular notes but can be 
-        "assigned" to a specific note layer. This _assignment_ number
-        is used for layer filtering here, and may not always correspond 
-        to the note layer you expect. 
+    finaleplugin.AuthorURL = "http://carlvine.com/lua/"
+    finaleplugin.Copyright = "https://creativecommons.org/licenses/by/4.0/"
+    finaleplugin.Version = "0.10"
+    finaleplugin.Date = "2024/05/03"
+    finaleplugin.MinJWLuaVersion = 0.62
+    finaleplugin.Notes = [[
+        There's a couple of __Music Spacing__ options that I 
+        change frequently for different spacing scenarios. 
+        This little hack uses a couple of hotkeys 
+        to do that very quickly, without a mouse and without navigating 
+        the whole __Document__ → __Document Options__ → 
+        __Music Spacing__ → __Avoid Collision of__ → menu/dialog system.
     ]]
     finaleplugin.RTFNotes = [[
         {\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier New;}}
@@ -5913,63 +5223,54 @@ function plugindef()
         \widowctrl\hyphauto
         \fs18
         {\info{\comment "os":"mac","fs18":"fs24","fs26":"fs32","fs23":"fs29","fs20":"fs26"}}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 This script presents an alphabetical list of 24 individual types of data to delete, each line beginning with a configurable {\i hotkey}. Call the script, type the {\i hotkey} and hit [Enter] or [Return]. Half of the datatypes can be filtered by layer.\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 {\b Delete Independently}:\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li720 \fi0 Articulations\u8226? | Articulations on Rests\u8226? | Chords | Cross Staff Entries\u8226?\line Custom Lines | Dynamics\u8226? | Expressions (Not Dynamics)\u8226?\line Expressions (All)\u8226? | Expressions (Measure-Attached) | Glissandos\line Hairpins | Lyrics\u8226? | MIDI Continuous Data | MIDI Note Data\u8226?\line Note Position Offsets\u8226? | Notehead Modifications\u8226? | Notes\u8226?\line Secondary Beam Breaks\u8226? | Slurs | Smart Shapes (Note Attached)\u8226?\line Smart Shapes (Beat Attached) | Smart Shapes (All) | Staff Styles\line Tuplets\u8226? | User Selected\u8230? | (\u8226? = filter by layer)\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 To delete the same data as last time without a confirmation dialog hold down [Shift] when starting the script. The layer number is \u8220"clamped\u8221" to a single character so to change layer just type a new number - [Delete] key not needed.\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 {\b Expression Layers}\line Expressions are not fixed to particular notes but can be \u8220"assigned\u8221" to a specific note layer. This {\i assignment} number is used for layer filtering here, and may not always correspond to the note layer you expect.\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 There\u8217's a couple of {\b Music Spacing} options that I change frequently for different spacing scenarios. This little hack uses a couple of hotkeys to do that very quickly, without a mouse and without navigating the whole {\b Document} \u8594? {\b Document Options} \u8594? {\b Music Spacing} \u8594? {\b Avoid Collision of} \u8594? menu/dialog system.\par}
         }
     ]]
-    finaleplugin.HashURL = "https://raw.githubusercontent.com/finale-lua/lua-scripts/master/hash/deletion_chooser.hash"
-    return "Deletion Chooser...", "Deletion Chooser", "Choose specific items to delete by keystroke"
+    finaleplugin.HashURL = "https://raw.githubusercontent.com/finale-lua/lua-scripts/master/hash/music_spacing_hack.hash"
+    return "Music Spacing Hack...",
+        "Music Spacing Hack",
+        "A keyboard hack to quickly change music spacing options"
+end
+local config = {
+    window_pos_x = false,
+    window_pos_y = false,
+    measurement_unit = finale.MEASUREMENTUNIT_DEFAULT,
+}
+local checks = {
+    { "AvoidArticulations", "A", "Articulations" },
+    { "AvoidChords",      "S", "Chords" },
+    { "AvoidClefs",       "D", "Clefs" },
+    { "AvoidHiddenNotes", "W", "Hidden Notes" },
+    { "AvoidLedgerLines", "E", "Ledger Lines" },
+    { "AvoidLyrics",      "R", "Lyrics" },
+}
+local unisons = {
+    { finale.UNISSPACE_NONE,               "X", "None" },
+    { finale.UNISSPACE_DIFFERENTNOTEHEADS, "V", "Different Noteheads" },
+    { finale.UNISSPACE_ALLNOTEHEADS,       "B", "All Noteheads" },
+}
+local others = {
+    {"change_hotkeys",        "H", "Change Hotkeys"},
+    {"AutomaticMusicSpacing", "Z", "Automatic Music Spacing"},
+    {"script_info",           "Q", "Show Script Info"}
+}
+for _, t in ipairs{checks, unisons, others} do
+    for _, v in ipairs(t) do
+        config[tostring(v[1])] = v[2]
+    end
 end
 local configuration = require("library.configuration")
 local mixin = require("library.mixin")
-local expression = require("library.expression")
-local layer = require("library.layer")
 local utils = require("library.utils")
-local note_entry = require("library.note_entry")
 local library = require("library.general_library")
 local script_name = library.calc_script_name()
+local name = plugindef():gsub("%.%.%.", "")
 local refocus_document = false
-local clear_selected_items_menu = finenv.UI():IsOnMac() and 1296385394 or 16010
-local dialog_options = {
-    { "entry_articulation",     "A", "Articulations •" },
-    { "rest_articulation",      "R", "Articulations on Rests •" },
-    { "chords",                 "W", "Chords" },
-    { "cross_staff",            "X", "Cross Staff Entries •" },
-    { "shape_IsCustomLine",     "C", "Custom Lines" },
-    { "expression_dynamic",     "D", "Dynamics •" },
-    { "expression_not_dynamic", "E", "Expressions (Not Dynamics) •" },
-    { "expression_all",         "F", "Expressions (All Note-Attached) •" },
-    { "measure_attached",       "M", "Expressions (Measure-Attached)" },
-    { "shape_IsGlissando",      "G", "Glissandos" },
-    { "shape_IsHairpin",        "H", "Hairpins" },
-    { "entry_lyrics",           "L", "Lyrics •" },
-    { "midi_continuous",        "O", "MIDI Continuous Data" },
-    { "midi_entry",             "I", "MIDI Note Data •" },
-    { "entry_position",         "Q", "Note Position Offsets •" },
-    { "notehead_mods",          "J", "Notehead Modifications •" },
-    { "notes",                  "N", "Notes •" },
-    { "secondary_beam_breaks",  "K", "Secondary Beam Breaks •" },
-    { "shape_IsSlur",           "S", "Slurs" },
-    { "shape_IsEntryBased",     "P", "Smart Shapes (Note Attached) •" },
-    { "shape_GetBeatAttached",  "B", "Smart Shapes (Beat Attached)" },
-    { "shape_all",              "V", "Smart Shapes (All)" },
-    { "staff_styles",           "Y", "Staff Styles (Current Score/Part)" },
-    { "entry_tuplets",          "T", "Tuplets •" },
-    { "user_selected",          "Z", "User Selected Items ..." },
-}
-local config = {
-    layer_num = 0,
-    last_selected = 0,
-    window_pos_x = false,
-    window_pos_y = false,
-    ignore_duplicates = 0,
-}
-for _, v in ipairs(dialog_options) do
-    config[v[1]] = v[2]
-end
+local prefs = finale.FCMusicSpacingPrefs()
+local gen_prefs = finale.FCGeneralPrefs()
+prefs:LoadFirst()
+gen_prefs:LoadFirst()
+configuration.get_user_settings(script_name, config)
 local function dialog_set_position(dialog)
     if config.window_pos_x and config.window_pos_y then
         dialog:StorePosition()
@@ -5983,244 +5284,63 @@ local function dialog_save_position(dialog)
     config.window_pos_y = dialog.StoredY
     configuration.save_user_settings(script_name, config)
 end
-function shape_match_layer(shape, layer_num)
-    if layer_num == 0 then return true end
-    local left_seg = shape:GetTerminateSegmentLeft()
-    local cell = finale.FCNoteEntryCell(left_seg.Measure, left_seg.Staff)
-    cell:Load()
-
-    local entry = cell:FindEntryNumber(left_seg.EntryNumber)
-    return (entry.LayerNumber == layer_num)
-end
-local function delete_selected(delete_type)
-    local rgn = finenv.Region()
-    local layer_num = config.layer_num
-    if delete_type == "user_selected" then
-        if not finenv.UI():ExecuteOSMenuCommand(clear_selected_items_menu) then
-            finenv.UI():AlertError("RGP Lua couldn't identify the Finale menu item "
-                .. "\"Edit\" → \"Clear Selected Items...\"", "Error")
-        end
-
-    elseif delete_type:find("shape") then
-
-        for mark in loadallforregion(finale.FCSmartShapeMeasureMarks(), rgn) do
-            local shape = mark:CreateSmartShape()
-            local test = delete_type:sub(7)
-            if shape and (test == "all" or shape[test](shape)) then
-                if (not shape:IsEntryBased()) or shape_match_layer(shape, layer_num) then
-                    shape:DeleteData()
-                end
-            end
-        end
-
-    elseif delete_type:find("express") then
-        local expressions = finale.FCExpressions()
-        expressions:LoadAllForRegion(rgn)
-        for exp in eachbackwards(expressions) do
-            if layer_num == 0 or exp.LayerAssignment == 0 or layer_num == exp.LayerAssignment then
-                if exp.StaffGroupID == 0 and
-                (      (delete_type == "expression_all")
-                    or (delete_type == "expression_dynamic" and expression.is_dynamic(exp))
-                    or (delete_type == "expression_not_dynamic" and not expression.is_dynamic(exp))
-                )
-                then
-                    exp:DeleteData()
-                end
-            end
-        end
-
-    elseif delete_type == "midi_continuous" then
-        local midi_ex = finale.FCMidiExpressions()
-        midi_ex:LoadAllForRegion(rgn)
-        for exp in eachbackwards(midi_ex) do
-            exp:DeleteData()
-        end
-
-    elseif delete_type == "chords" then
-        local chords = finale.FCChords()
-        chords:LoadAllForRegion(rgn)
-        for chord in eachbackwards(chords) do
-            if chord then chord:DeleteData() end
-        end
-
-    elseif delete_type == "notes" then
-        for entry in eachentrysaved(rgn, layer_num) do
-            if entry:IsNote() then note_entry.make_rest(entry) end
-        end
-        for m, s in eachcell(rgn) do
-            local c = finale.FCNoteEntryCell(m, s)
-            c:Load()
-            c:ReduceEntries()
-            c:Save()
-        end
-
-    elseif delete_type == "measure_attached" then
-        local measures = finale.FCMeasures()
-        measures:LoadRegion(rgn)
-        for measure in each(measures) do
-            for exp in eachbackwards(measure:CreateExpressions()) do
-                if exp.StaffGroupID > 0 then
-                    exp:DeleteData()
-                end
-            end
-            local m_exp = finale.FCExpression()
-            if not m_exp:Load(measure.ItemNo, 0) then
-                measure.ExpressionFlag = false
-                measure:Save()
-            end
-        end
-
-    elseif delete_type == "staff_styles" then
-        for staff_number in eachstaff(rgn) do
-            local style_assign = finale.FCStaffStyleAssigns()
-            style_assign:LoadAllForItem(staff_number)
-            for style in eachbackwards(style_assign) do
-                local ss = { L = style.StartMeasure, R = style.EndMeasure }
-                local rr = { L = rgn.StartMeasure, R = rgn.EndMeasure }
-                if (ss.L <= rr.R and ss.R >= rr.L) then
-                    if (ss.L >= rr.L) and (ss.R <= rr.R) then
-                        style:DeleteData()
-                    else
-                        if ss.L >= rr.L then
-                            style.StartMeasure = rr.R + 1
-                            style:Save()
-                        else
-                            style.EndMeasure = rr.L - 1
-                            style:Save()
-                            if ss.R > rr.R then
-                                local style_copy = mixin.FCMStaffStyleAssign()
-                                style_copy:SetStyleID(style.StyleID)
-                                    :SetStartMeasure(rr.R + 1)
-                                    :SetEndMeasure(ss.R)
-                                    :SaveNew(staff_number)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-    else
-        for entry in eachentrysaved(rgn, layer_num) do
-
-            if delete_type:find("artic") and entry.ArticulationFlag then
-                if delete_type == "entry_articulation" or (entry:IsRest() and delete_type == "rest_articulation") then
-                    for articulation in eachbackwards(entry:CreateArticulations()) do
-                        articulation:DeleteData()
-                    end
-                    entry:SetArticulationFlag(false)
-                end
-
-            elseif delete_type == "notehead_mods" and entry:IsNote() then
-                local mods = entry:CreateNoteheadMods()
-                if mods.Count > 0 then
-                    for mod in eachbackwards(mods) do
-                        mod:DeleteData()
-                    end
-                end
-
-            elseif delete_type == "midi_entry" and entry.PerformanceDataFlag then
-                local perf_mods = entry:CreatePerformanceMods()
-                if perf_mods.Count > 0 then
-                    for mod in eachbackwards(perf_mods) do
-                        mod:DeleteData()
-                    end
-                end
-                entry.PerformanceDataFlag = false
-
-            elseif delete_type == "entry_lyrics" and entry.LyricFlag then
-                for _, v in ipairs{"FCChorusSyllable", "FCSectionSyllable", "FCVerseSyllable"} do
-                    local lyric = finale[v]()
-                    lyric:SetNoteEntry(entry)
-                    while lyric:LoadFirst() do
-                        lyric:DeleteData()
-                    end
-                end
-
-            elseif delete_type == "entry_tuplets" and entry.TupletStartFlag then
-                local tuplets = entry:CreateTuplets()
-                for tuplet in eachbackwards(tuplets) do
-                    tuplet:DeleteData()
-                end
-                tuplets:ClearAll()
-                entry.TupletStartFlag = false
-
-            elseif delete_type == "entry_position" then
-                entry.ManualPosition = 0
-
-            elseif delete_type == "secondary_beam_breaks" then
-                local sbbm = finale.FCSecondaryBeamBreakMod()
-                sbbm:SetNoteEntry(entry)
-                while sbbm:LoadFirst() do
-                    sbbm:DeleteData()
-                end
-
-            elseif delete_type == "cross_staff" then
-                entry.ManualPosition = 0
-                if entry:IsRest() then
-                    entry:SetRestDisplacement(0)
-                    entry.FloatingRest = true
-                else
-                    entry.ReverseUpStem = false
-                    entry.ReverseDownStem = false
-                    entry.FreezeBeam = false
-                    entry.FreezeStem = false
-                    for _, type in ipairs{"FCCrossStaffMods", "FCPrimaryBeamMods"} do
-                        local mods = finale[type](entry)
-                        mods:LoadAll()
-                        for m in eachbackwards(mods) do
-                            m:DeleteData()
-                        end
-                    end
-                    if entry.StemDetailFlag then
-                        local stem_mod = finale.FCStemMod()
-                        stem_mod:SetNoteEntry(entry)
-                        stem_mod:DeleteData()
-                    end
-                end
-                entry.CrossStaff = false
-            end
-        end
-    end
-end
-local function reassign_keys(parent, selected)
-    local y_step, x_wide = 17, 180
+local function reassign_keys(parent)
+    local x_wide = 140
     local offset = finenv.UI():IsOnMac() and 3 or 0
-    local dialog = mixin.FCXCustomLuaWindow():SetTitle("Reassign Hotkeys")
-    local is_duplicate, errors = false, {}
-    local y = 0
-    for _, v in ipairs(dialog_options) do
-        dialog:CreateEdit(0, y - offset, v[1]):SetText(config[v[1]]):SetWidth(20)
-            :AddHandleCommand(function(self)
-                local s = self:GetText():sub(-1):upper()
-                self:SetText(s):SetKeyboardFocus()
-            end)
-        dialog:CreateStatic(25, y):SetText(v[3]):SetWidth(x_wide)
-        y = y + y_step
-    end
-    y = y + 7
-    local ignore = dialog:CreateCheckbox(0, y):SetWidth(x_wide)
-        :SetText("Ignore duplicate assignments"):SetCheck(config.ignore_duplicates or 0)
-    dialog:CreateOkButton():SetText("Save")
-    dialog:CreateCancelButton()
-    dialog:RegisterInitWindow(function(self) self:GetControl(selected):SetKeyboardFocus() end)
-    dialog_set_position(dialog)
-    dialog:RegisterHandleOkButtonPressed(function(self)
-        local assigned = {}
-        for _, v in ipairs(dialog_options) do
-            local key = self:GetControl(v[1]):GetText()
-            if key == "" then key = "?" end
-            config[v[1]] = key
-            config.ignore_duplicates = ignore:GetCheck()
-            if config.ignore_duplicates == 0 then
+    local is_duplicate, errors, assigned = false, {}, {}
+    local y = 3
+    local saved = {}
+    local dialog = mixin.FCXCustomLuaWindow():SetTitle("Change Hotkeys")
+        local function dy(diff) y = y + (diff and diff or 18) end
+        local function cstat(cx, cy, ctext, cwide)
+            dialog:CreateStatic(cx, cy):SetText(ctext):SetWidth(cwide)
+        end
+        local function key_check(ctl, id)
+            local s = ctl:GetText():sub(-1):upper()
+            if s:find("[^ .P0-9]") then saved[id] = s end
+            ctl:SetText(saved[id])
+        end
+        local function check_line(array)
+            for _, v in ipairs(array) do
+                local id = tostring(v[1])
+                saved[id] = config[id]
+                dialog:CreateEdit(0, y - offset, id):SetText(config[id]):SetWidth(20)
+                    :AddHandleCommand(function(self) key_check(self, id) end)
+                cstat(25, y, v[3], x_wide)
+                dy()
+            end
+        end
+        local function duplication_check(array)
+            for _, v in ipairs(array) do
+                local key = dialog:GetControl(tostring(v[1])):GetText()
+                if key == "" then key = "?" end
+                config[tostring(v[1])] = key
+                local suffix = (type(v[1]) == "number") and "Unisons " or ""
                 if assigned[key] then
                     is_duplicate = true
                     if not errors[key] then errors[key] = { assigned[key] } end
-                    table.insert(errors[key], v[3])
+                    table.insert(errors[key], suffix .. v[3])
                 else
-                    assigned[key] = v[3]
+                    assigned[key] = suffix .. v[3]
                 end
             end
+        end
+    check_line(checks)
+    cstat(0, y, "Unison Noteheads:", x_wide)
+    dy()
+    check_line(unisons)
+    cstat(25, y, "- - -", x_wide)
+    dy()
+    check_line(others)
+    dialog:CreateOkButton():SetText("Save")
+    dialog:CreateCancelButton()
+    dialog:RegisterInitWindow(function(self)
+        self:GetControl("AvoidArticulations"):SetKeyboardFocus()
+    end)
+    dialog_set_position(dialog)
+    dialog:RegisterHandleOkButtonPressed(function()
+        for _, t in ipairs{checks, unisons, others} do
+            duplication_check(t)
         end
         if is_duplicate then
             local msg = ""
@@ -6239,90 +5359,149 @@ local function reassign_keys(parent, selected)
     refocus_document = true
     return ok, is_duplicate
 end
-local function user_chooses()
-    local y_step = 17
-    local box_wide = 236
-    local box_high = (#dialog_options * y_step) + 5
-    local x_off = box_wide / 4
-    local y = box_high + 27
-    local max = layer.max_layers()
-    local offset = finenv.UI():IsOnMac() and 3 or 0
-    local name = plugindef():gsub("%.%.%.", "")
-    local dialog = mixin.FCXCustomLuaWindow():SetTitle(name)
-    dialog:CreateStatic(0, 0):SetText("Delete data of type:"):SetWidth(box_wide)
-    local key_list = dialog:CreateListBox(0, 20):SetWidth(box_wide):SetHeight(box_high)
+local function run_the_dialog()
+    local x = { 20, 40, 150 }
+    local y = 0
+    local m_offset = finenv.UI():IsOnMac() and 3 or 0
+    local saved
+    local dialog = mixin.FCXCustomLuaWindow():SetTitle(name:sub(1, -5))
+    dialog:SetMeasurementUnit(config.measurement_unit)
 
+        local function dy(diff) y = y + (diff and diff or 17) end
         local function show_info()
-            utils.show_notes_dialog(dialog, "About " .. name, 500, 340)
+            utils.show_notes_dialog(dialog, "About " .. name, 300, 150)
             refocus_document = true
         end
-        local function fill_key_list()
-            local join = finenv.UI():IsOnMac() and "\t" or ":  "
-            key_list:Clear()
-            for _, v in ipairs(dialog_options) do
-                key_list:AddString(config[v[1]] .. join .. v[3])
+        local function cstat(cx, cy, ctext, cwide, cname)
+            dialog:CreateStatic(cx, cy, cname):SetText(ctext):SetWidth(cwide)
+        end
+        local function ccheck(cx, cy, cname, ctext, cwide, check)
+            dialog:CreateCheckbox(cx, cy, cname):SetText(ctext):SetWidth(cwide):SetCheck(check)
+        end
+        local function toggle_check(id)
+            local ctl = dialog:GetControl(id)
+            ctl:SetCheck((ctl:GetCheck() + 1) % 2)
+        end
+        local function toggle_unison(id)
+            for i = unisons[1][1], unisons[3][1] do
+                dialog:GetControl(tostring(i)):SetCheck(i == id and 1 or 0)
             end
-            key_list:SetSelectedItem(config.last_selected or 0)
         end
         local function change_keys()
             local ok, is_duplicate = true, true
-            local selected = dialog_options[key_list:GetSelectedItem() + 1][1]
             while ok and is_duplicate do
-                ok, is_duplicate = reassign_keys(dialog, selected)
+                ok, is_duplicate = reassign_keys(dialog)
             end
             if ok then
-                fill_key_list()
+                for _, t in ipairs{checks, unisons, others} do
+                    for _, v in ipairs(t) do
+                        if v[1] ~= "script_info" then
+                            dialog:GetControl("T" .. v[1]):SetText(config[tostring(v[1])])
+                        end
+                    end
+                end
             else
                 configuration.get_user_settings(script_name, config)
             end
+            dialog:GetControl("max_width"):SetKeyboardFocus()
         end
-    fill_key_list()
-    dialog:CreateStatic(0, y):SetWidth(x_off * 3):SetText("For data types marked [•]:")
-    y = y + y_step
-    dialog:CreateStatic(0, y):SetWidth(x_off + 36):SetText("Active Layer 1-" .. max)
-    local save_layer = tostring(config.layer_num) or "0"
-    local layer_num = dialog:CreateEdit(x_off + 37, y - offset):SetWidth(20):SetText(save_layer)
-        :AddHandleCommand(function(self)
-            local val = self:GetText():lower()
-            if val:find("[^0-" .. max .. "]") then
-                if val:find("[?q]") then show_info()
-                elseif val:find("r") then change_keys()
+        local function key_check(ctl)
+            local s = ctl:GetText():upper()
+            if s:find("[^.P0-9]") then
+                if s:find(config.change_hotkeys) then
+                    change_keys()
+                elseif s:find(config.AutomaticMusicSpacing) then
+                    toggle_check("AutomaticMusicSpacing")
+                elseif s:find(config.script_info) then show_info()
+                else
+                    local matched = false
+                    for _, array in ipairs{{checks, toggle_check}, {unisons, toggle_unison}} do
+                        if not matched then
+                            for _, v in ipairs(array[1]) do
+                                if s:find(config[tostring(v[1])]) then
+                                    array[2](v[1])
+                                    matched = true
+                                    break
+                                end
+                            end
+                        end
+                    end
                 end
-                self:SetText(save_layer):SetKeyboardFocus()
-            elseif val ~= "" then
-                val = val:sub(-1)
-                self:SetText(val)
-                save_layer = val
+            else
+                saved = s:sub(1, 8):lower()
             end
-        end)
-    dialog:CreateStatic(x_off + 60, y):SetWidth(x_off):SetText("(0 = all)")
-    y = y + y_step + 2
-    dialog:CreateButton(0, y):SetText("Reassign Hotkeys"):SetWidth(x_off * 2)
-        :AddHandleCommand(function() change_keys() end)
-    local q = dialog:CreateButton(box_wide - 20, y):SetText("?"):SetWidth(20)
+            ctl:SetText(saved)
+        end
+    cstat(0, y, "THE " .. name:upper(), 160, "title")
+    dy(25)
+    cstat(0, y, "Avoid Collisions of:", x[3])
+    dialog:CreateButton(x[2] + x[3] - 50, y, "q"):SetText("?"):SetWidth(20)
         :AddHandleCommand(function() show_info() end)
-    dialog:CreateOkButton():SetText("Select")
+    dy()
+    for _, v in ipairs(checks) do
+        cstat(0, y, config[v[1]], x[1], "T" .. v[1])
+        ccheck(x[1], y, v[1], v[3], x[3], (prefs[v[1]] and 1 or 0))
+        dy()
+    end
+    cstat(x[1], y, "Unison Noteheads:", x[3])
+    dy()
+    for _, v in ipairs(unisons) do
+        local id = tostring(v[1])
+        cstat(x[1], y, config[id], x[2], "T" .. v[1])
+        ccheck(x[2], y, id, v[3], x[3] - x[1], (prefs.UnisonsMode == v[1]) and 1 or 0)
+        dialog:GetControl(id)
+            :AddHandleCommand(function() toggle_unison(v[1]) end)
+        dy()
+    end
+    dy(8)
+    cstat(0, y, "Max Width:", x[2] + 25)
+    dialog:CreateMeasurementEdit(x[2] + 27, y - m_offset, "max_width")
+        :SetWidth(90):SetMeasurementInteger(prefs.MaxMeasureWidth)
+        :AddHandleCommand(function(self) key_check(self) end)
+    saved = dialog:GetControl("max_width"):GetText()
+    dy(25)
+    cstat(x[2] - 10, y, "Units:", 37)
+    dialog:CreateMeasurementUnitPopup(x[2] + 27, y, "popup"):SetWidth(90)
+        :AddHandleCommand(function()
+            saved = dialog:GetControl("max_width"):GetText()
+        end)
+    dy(25)
+    cstat(0, y, config.change_hotkeys, x[2], "Tchange_hotkeys")
+    dialog:CreateButton(x[1], y):SetText("Change Hotkeys"):SetWidth(100)
+        :AddHandleCommand(function() change_keys() end)
+    dy(22)
+    local val = others[2]
+    cstat(0, y, config[val[1]], x[1], "T" .. val[1])
+    ccheck(x[1], y, val[1], val[3], x[3], (gen_prefs[val[1]] and 1 or 0))
+    dialog:CreateOkButton()
     dialog:CreateCancelButton()
     dialog_set_position(dialog)
-    dialog:RegisterHandleOkButtonPressed(function()
-            config.last_selected = key_list:GetSelectedItem()
-            config.layer_num = layer_num:GetInteger()
-        end)
-    dialog:RegisterCloseWindow(function(self) dialog_save_position(self) end)
-    dialog:RegisterInitWindow(function()
-        q:SetFont(q:CreateFontInfo():SetBold(true))
-        key_list:SetKeyboardFocus()
+    dialog:RegisterInitWindow(function(self)
+        self:GetControl("max_width"):SetKeyboardFocus()
+        local q = self:GetControl("q")
+        local bold = q:CreateFontInfo():SetBold(true)
+        q:SetFont(bold)
+        self:GetControl("title"):SetFont(bold)
     end)
-    return (dialog:ExecuteModal(nil) == finale.EXECMODAL_OK)
-end
-local function select_delete_type()
-    configuration.get_user_settings(script_name, config, true)
-    local qim = finenv.QueryInvokedModifierKeys
-    local mod_key = qim and (qim(finale.CMDMODKEY_ALT) or qim(finale.CMDMODKEY_SHIFT))
-    if mod_key or user_chooses() then
-        local type = dialog_options[config.last_selected + 1][1]
-        delete_selected(type)
-    end
+    dialog:RegisterHandleOkButtonPressed(function(self)
+        for _, v in ipairs(checks) do
+            prefs[v[1]] = (self:GetControl(v[1]):GetCheck() == 1)
+        end
+        for _, v in ipairs(unisons) do
+            if (self:GetControl(tostring(v[1])):GetCheck() == 1) then
+                prefs.UnisonsMode = v[1]
+                break
+            end
+        end
+        local n = self:GetControl("max_width"):GetMeasurementInteger()
+        prefs.MaxMeasureWidth = math.max(n, 50)
+        prefs:Save()
+        gen_prefs.AutomaticMusicSpacing = (self:GetControl("AutomaticMusicSpacing"):GetCheck() == 1)
+        gen_prefs:Save()
+        config.measurement_unit = self:GetMeasurementUnit()
+    end)
+    dialog:RegisterCloseWindow(function(self) dialog_save_position(self) end)
+    dialog:ExecuteModal()
     if refocus_document then finenv.UI():ActivateDocumentWindow() end
 end
-select_delete_type()
+run_the_dialog()
