@@ -1,448 +1,3 @@
-package.preload["library.configuration"] = package.preload["library.configuration"] or function()
-
-
-
-    local configuration = {}
-    local utils = require("library.utils")
-    local script_settings_dir = "script_settings"
-    local comment_marker = "--"
-    local parameter_delimiter = "="
-    local path_delimiter = "/"
-    local file_exists = function(file_path)
-        local f = io.open(file_path, "r")
-        if nil ~= f then
-            io.close(f)
-            return true
-        end
-        return false
-    end
-    parse_parameter = function(val_string)
-        if "\"" == val_string:sub(1, 1) and "\"" == val_string:sub(#val_string, #val_string) then
-            return string.gsub(val_string, "\"(.+)\"", "%1")
-        elseif "'" == val_string:sub(1, 1) and "'" == val_string:sub(#val_string, #val_string) then
-            return string.gsub(val_string, "'(.+)'", "%1")
-        elseif "{" == val_string:sub(1, 1) and "}" == val_string:sub(#val_string, #val_string) then
-            return load("return " .. val_string)()
-        elseif "true" == val_string then
-            return true
-        elseif "false" == val_string then
-            return false
-        end
-        return tonumber(val_string)
-    end
-    local get_parameters_from_file = function(file_path, parameter_list)
-        local file_parameters = {}
-        if not file_exists(file_path) then
-            return false
-        end
-        for line in io.lines(file_path) do
-            local comment_at = string.find(line, comment_marker, 1, true)
-            if nil ~= comment_at then
-                line = string.sub(line, 1, comment_at - 1)
-            end
-            local delimiter_at = string.find(line, parameter_delimiter, 1, true)
-            if nil ~= delimiter_at then
-                local name = utils.trim(string.sub(line, 1, delimiter_at - 1))
-                local val_string = utils.trim(string.sub(line, delimiter_at + 1))
-                file_parameters[name] = parse_parameter(val_string)
-            end
-        end
-        local function process_table(param_table, param_prefix)
-            param_prefix = param_prefix and param_prefix.."." or ""
-            for param_name, param_val in pairs(param_table) do
-                local file_param_name = param_prefix .. param_name
-                local file_param_val = file_parameters[file_param_name]
-                if nil ~= file_param_val then
-                    param_table[param_name] = file_param_val
-                elseif type(param_val) == "table" then
-                        process_table(param_val, param_prefix..param_name)
-                end
-            end
-        end
-        process_table(parameter_list)
-        return true
-    end
-
-    function configuration.get_parameters(file_name, parameter_list)
-        local path
-        if finenv.IsRGPLua then
-            path = finenv.RunningLuaFolderPath()
-        else
-            local str = finale.FCString()
-            str:SetRunningLuaFolderPath()
-            path = str.LuaString
-        end
-        local file_path = path .. script_settings_dir .. path_delimiter .. file_name
-        return get_parameters_from_file(file_path, parameter_list)
-    end
-
-
-    local calc_preferences_filepath = function(script_name)
-        local str = finale.FCString()
-        str:SetUserOptionsPath()
-        local folder_name = str.LuaString
-        if not finenv.IsRGPLua and finenv.UI():IsOnMac() then
-
-            folder_name = os.getenv("HOME") .. folder_name:sub(2)
-        end
-        if finenv.UI():IsOnWindows() then
-            folder_name = folder_name .. path_delimiter .. "FinaleLua"
-        end
-        local file_path = folder_name .. path_delimiter
-        if finenv.UI():IsOnMac() then
-            file_path = file_path .. "com.finalelua."
-        end
-        file_path = file_path .. script_name .. ".settings.txt"
-        return file_path, folder_name
-    end
-
-    function configuration.save_user_settings(script_name, parameter_list)
-        local file_path, folder_path = calc_preferences_filepath(script_name)
-        local file = io.open(file_path, "w")
-        if not file and finenv.UI():IsOnWindows() then
-
-            local osutils = finenv.EmbeddedLuaOSUtils and require("luaosutils")
-            if osutils then
-                osutils.process.make_dir(folder_path)
-            else
-                os.execute('mkdir "' .. folder_path ..'"')
-            end
-            file = io.open(file_path, "w")
-        end
-        if not file then
-            return false
-        end
-        file:write("-- User settings for " .. script_name .. ".lua\n\n")
-        for k,v in pairs(parameter_list) do
-            if type(v) == "string" then
-                v = "\"" .. v .."\""
-            else
-                v = tostring(v)
-            end
-            file:write(k, " = ", v, "\n")
-        end
-        file:close()
-        return true
-    end
-
-    function configuration.get_user_settings(script_name, parameter_list, create_automatically)
-        if create_automatically == nil then create_automatically = true end
-        local exists = get_parameters_from_file(calc_preferences_filepath(script_name), parameter_list)
-        if not exists and create_automatically then
-            configuration.save_user_settings(script_name, parameter_list)
-        end
-        return exists
-    end
-    return configuration
-end
-package.preload["library.note_entry"] = package.preload["library.note_entry"] or function()
-
-    local note_entry = {}
-
-    function note_entry.get_music_region(entry)
-        local exp_region = finale.FCMusicRegion()
-        exp_region:SetCurrentSelection()
-        exp_region.StartStaff = entry.Staff
-        exp_region.EndStaff = entry.Staff
-        exp_region.StartMeasure = entry.Measure
-        exp_region.EndMeasure = entry.Measure
-        exp_region.StartMeasurePos = entry.MeasurePos
-        exp_region.EndMeasurePos = entry.MeasurePos
-        return exp_region
-    end
-
-
-    local use_or_get_passed_in_entry_metrics = function(entry, entry_metrics)
-        if entry_metrics then
-            return entry_metrics, false
-        end
-        entry_metrics = finale.FCEntryMetrics()
-        if entry_metrics:Load(entry) then
-            return entry_metrics, true
-        end
-        return nil, false
-    end
-
-    function note_entry.get_evpu_notehead_height(entry)
-        local highest_note = entry:CalcHighestNote(nil)
-        local lowest_note = entry:CalcLowestNote(nil)
-        local evpu_height = (2 + highest_note:CalcStaffPosition() - lowest_note:CalcStaffPosition()) * 12
-        return evpu_height
-    end
-
-    function note_entry.get_top_note_position(entry, entry_metrics)
-        local retval = -math.huge
-        local loaded_here
-        entry_metrics, loaded_here = use_or_get_passed_in_entry_metrics(entry, entry_metrics)
-        if nil == entry_metrics then
-            return retval
-        end
-        if not entry:CalcStemUp() then
-            retval = entry_metrics.TopPosition
-        else
-            local cell_metrics = finale.FCCell(entry.Measure, entry.Staff):CreateCellMetrics()
-            if nil ~= cell_metrics then
-                local evpu_height = note_entry.get_evpu_notehead_height(entry)
-                local scaled_height = math.floor(((cell_metrics.StaffScaling * evpu_height) / 10000) + 0.5)
-                retval = entry_metrics.BottomPosition + scaled_height
-                cell_metrics:FreeMetrics()
-            end
-        end
-        if loaded_here then
-            entry_metrics:FreeMetrics()
-        end
-        return retval
-    end
-
-    function note_entry.get_bottom_note_position(entry, entry_metrics)
-        local retval = math.huge
-        local loaded_here
-        entry_metrics, loaded_here = use_or_get_passed_in_entry_metrics(entry, entry_metrics)
-        if nil == entry_metrics then
-            return retval
-        end
-        if entry:CalcStemUp() then
-            retval = entry_metrics.BottomPosition
-        else
-            local cell_metrics = finale.FCCell(entry.Measure, entry.Staff):CreateCellMetrics()
-            if nil ~= cell_metrics then
-                local evpu_height = note_entry.get_evpu_notehead_height(entry)
-                local scaled_height = math.floor(((cell_metrics.StaffScaling * evpu_height) / 10000) + 0.5)
-                retval = entry_metrics.TopPosition - scaled_height
-                cell_metrics:FreeMetrics()
-            end
-        end
-        if loaded_here then
-            entry_metrics:FreeMetrics()
-        end
-        return retval
-    end
-
-    function note_entry.calc_widths(entry)
-        local left_width = 0
-        local right_width = 0
-        for note in each(entry) do
-            local note_width = note:CalcNoteheadWidth()
-            if note_width > 0 then
-                if note:CalcRightsidePlacement() then
-                    if note_width > right_width then
-                        right_width = note_width
-                    end
-                else
-                    if note_width > left_width then
-                        left_width = note_width
-                    end
-                end
-            end
-        end
-        return left_width, right_width
-    end
-
-
-
-
-    function note_entry.calc_left_of_all_noteheads(entry)
-        if entry:CalcStemUp() then
-            return 0
-        end
-        local left, _ = note_entry.calc_widths(entry)
-        return -left
-    end
-
-    function note_entry.calc_left_of_primary_notehead(_entry)
-        return 0
-    end
-
-    function note_entry.calc_center_of_all_noteheads(entry)
-        local left, right = note_entry.calc_widths(entry)
-        local width_centered = (left + right) / 2
-        if not entry:CalcStemUp() then
-            width_centered = width_centered - left
-        end
-        return width_centered
-    end
-
-    function note_entry.calc_center_of_primary_notehead(entry)
-        local left, right = note_entry.calc_widths(entry)
-        if entry:CalcStemUp() then
-            return left / 2
-        end
-        return right / 2
-    end
-
-    function note_entry.calc_stem_offset(entry)
-        if not entry:CalcStemUp() then
-            return 0
-        end
-        local left, _ = note_entry.calc_widths(entry)
-        return left
-    end
-
-    function note_entry.calc_right_of_all_noteheads(entry)
-        local left, right = note_entry.calc_widths(entry)
-        if entry:CalcStemUp() then
-            return left + right
-        end
-        return right
-    end
-
-    function note_entry.calc_note_at_index(entry, note_index)
-        local x = 0
-        for note in each(entry) do
-            if x == note_index then
-                return note
-            end
-            x = x + 1
-        end
-        return nil
-    end
-
-    function note_entry.stem_sign(entry)
-        if entry:CalcStemUp() then
-            return 1
-        end
-        return -1
-    end
-
-    function note_entry.duplicate_note(note)
-        local new_note = note.Entry:AddNewNote()
-        if nil ~= new_note then
-            new_note.Displacement = note.Displacement
-            new_note.RaiseLower = note.RaiseLower
-            new_note.Tie = note.Tie
-            new_note.TieBackwards = note.TieBackwards
-        end
-        return new_note
-    end
-
-    function note_entry.delete_note(note)
-        local entry = note.Entry
-        if nil == entry then
-            return false
-        end
-
-        finale.FCAccidentalMod():EraseAt(note)
-        finale.FCCrossStaffMod():EraseAt(note)
-        finale.FCDotMod():EraseAt(note)
-        finale.FCNoteheadMod():EraseAt(note)
-        finale.FCPercussionNoteMod():EraseAt(note)
-        finale.FCTablatureNoteMod():EraseAt(note)
-        finale.FCPerformanceMod():EraseAt(note)
-        if finale.FCTieMod then
-            finale.FCTieMod(finale.TIEMODTYPE_TIESTART):EraseAt(note)
-            finale.FCTieMod(finale.TIEMODTYPE_TIEEND):EraseAt(note)
-        end
-        return entry:DeleteNote(note)
-    end
-
-    function note_entry.make_rest(entry)
-        local articulations = entry:CreateArticulations()
-        for articulation in each(articulations) do
-            articulation:DeleteData()
-        end
-        if entry:IsNote() then
-            while entry.Count > 0 do
-                note_entry.delete_note(entry:GetItemAt(0))
-            end
-        end
-        entry:MakeRest()
-        return true
-    end
-
-    function note_entry.calc_pitch_string(note)
-        local pitch_string = finale.FCString()
-        local cell = finale.FCCell(note.Entry.Measure, note.Entry.Staff)
-        local key_signature = cell:GetKeySignature()
-        note:GetString(pitch_string, key_signature, false, false)
-        return pitch_string
-    end
-
-    function note_entry.calc_spans_number_of_octaves(entry)
-        local top_note = entry:CalcHighestNote(nil)
-        local bottom_note = entry:CalcLowestNote(nil)
-        local displacement_diff = top_note.Displacement - bottom_note.Displacement
-        local num_octaves = math.ceil(displacement_diff / 7)
-        return num_octaves
-    end
-
-    function note_entry.add_augmentation_dot(entry)
-
-        entry.Duration = bit32.bor(entry.Duration, bit32.rshift(entry.Duration, 1))
-    end
-
-    function note_entry.remove_augmentation_dot(entry)
-        if entry.Duration <= 0 then
-            return false
-        end
-        local lowest_order_bit = 1
-        if bit32.band(entry.Duration, lowest_order_bit) == 0 then
-
-            lowest_order_bit = bit32.bxor(bit32.band(entry.Duration, entry.Duration - 1), entry.Duration)
-        end
-
-        local new_value = bit32.band(entry.Duration, bit32.bnot(lowest_order_bit))
-        if new_value ~= 0 then
-            entry.Duration = new_value
-            return true
-        end
-        return false
-    end
-
-    function note_entry.get_next_same_v(entry)
-        if entry.NextSameVInFrame then
-            return entry:NextSameVInFrame()
-        end
-        local next_entry = entry:Next()
-        if entry.Voice2 then
-            if (nil ~= next_entry) and next_entry.Voice2 then
-                return next_entry
-            end
-            return nil
-        end
-        if entry.Voice2Launch then
-            while (nil ~= next_entry) and next_entry.Voice2 do
-                next_entry = next_entry:Next()
-            end
-        end
-        return next_entry
-    end
-
-    function note_entry.hide_stem(entry)
-        local stem = finale.FCCustomStemMod()
-        stem:SetNoteEntry(entry)
-        stem:UseUpStemData(entry:CalcStemUp())
-        if stem:LoadFirst() then
-            stem.ShapeID = 0
-            stem:Save()
-        else
-            stem.ShapeID = 0
-            stem:SaveNew()
-        end
-    end
-
-    function note_entry.rest_offset(entry, offset)
-        if entry:IsNote() then
-            return false
-        end
-        local rest_prop = "OtherRestPosition"
-        if entry.Duration >= finale.BREVE then
-            rest_prop = "DoubleWholeRestPosition"
-        elseif entry.Duration >= finale.WHOLE_NOTE then
-            rest_prop = "WholeRestPosition"
-        elseif entry.Duration >= finale.HALF_NOTE then
-            rest_prop = "HalfRestPosition"
-        end
-        entry:MakeMovableRest()
-        local rest = entry:GetItemAt(0)
-        local curr_staffpos = rest:CalcStaffPosition()
-        local staff_spec = finale.FCCurrentStaffSpec()
-        staff_spec:LoadForEntry(entry)
-        local total_offset = staff_spec[rest_prop] + offset - curr_staffpos
-        entry:SetRestDisplacement(entry:GetRestDisplacement() + total_offset)
-        return true
-    end
-    return note_entry
-end
 package.preload["mixin.FCMControl"] = package.preload["mixin.FCMControl"] or function()
 
 
@@ -4710,276 +4265,142 @@ package.preload["library.mixin"] = package.preload["library.mixin"] or function(
     end
     return mixin
 end
-package.preload["library.utils"] = package.preload["library.utils"] or function()
-
-    local utils = {}
+package.preload["library.configuration"] = package.preload["library.configuration"] or function()
 
 
 
-
-    function utils.copy_table(t, to_table, overwrite)
-        overwrite = (overwrite == nil) and true or false
-        if type(t) == "table" then
-            local new = type(to_table) == "table" and to_table or {}
-            for k, v in pairs(t) do
-                local new_key = utils.copy_table(k)
-                local new_value = utils.copy_table(v)
-                if overwrite then
-                    new[new_key] = new_value
-                else
-                    new[new_key] = new[new_key] == nil and new_value or new[new_key]
+    local configuration = {}
+    local utils = require("library.utils")
+    local script_settings_dir = "script_settings"
+    local comment_marker = "--"
+    local parameter_delimiter = "="
+    local path_delimiter = "/"
+    local file_exists = function(file_path)
+        local f = io.open(file_path, "r")
+        if nil ~= f then
+            io.close(f)
+            return true
+        end
+        return false
+    end
+    parse_parameter = function(val_string)
+        if "\"" == val_string:sub(1, 1) and "\"" == val_string:sub(#val_string, #val_string) then
+            return string.gsub(val_string, "\"(.+)\"", "%1")
+        elseif "'" == val_string:sub(1, 1) and "'" == val_string:sub(#val_string, #val_string) then
+            return string.gsub(val_string, "'(.+)'", "%1")
+        elseif "{" == val_string:sub(1, 1) and "}" == val_string:sub(#val_string, #val_string) then
+            return load("return " .. val_string)()
+        elseif "true" == val_string then
+            return true
+        elseif "false" == val_string then
+            return false
+        end
+        return tonumber(val_string)
+    end
+    local get_parameters_from_file = function(file_path, parameter_list)
+        local file_parameters = {}
+        if not file_exists(file_path) then
+            return false
+        end
+        for line in io.lines(file_path) do
+            local comment_at = string.find(line, comment_marker, 1, true)
+            if nil ~= comment_at then
+                line = string.sub(line, 1, comment_at - 1)
+            end
+            local delimiter_at = string.find(line, parameter_delimiter, 1, true)
+            if nil ~= delimiter_at then
+                local name = utils.trim(string.sub(line, 1, delimiter_at - 1))
+                local val_string = utils.trim(string.sub(line, delimiter_at + 1))
+                file_parameters[name] = parse_parameter(val_string)
+            end
+        end
+        local function process_table(param_table, param_prefix)
+            param_prefix = param_prefix and param_prefix.."." or ""
+            for param_name, param_val in pairs(param_table) do
+                local file_param_name = param_prefix .. param_name
+                local file_param_val = file_parameters[file_param_name]
+                if nil ~= file_param_val then
+                    param_table[param_name] = file_param_val
+                elseif type(param_val) == "table" then
+                        process_table(param_val, param_prefix..param_name)
                 end
             end
-            setmetatable(new, utils.copy_table(getmetatable(t)))
-            return new
-        else
-            return t
         end
-    end
-
-    function utils.table_remove_first(t, value)
-        for k = 1, #t do
-            if t[k] == value then
-                table.remove(t, k)
-                return
-            end
-        end
-    end
-
-    function utils.table_is_empty(t)
-        if type(t) ~= "table" then
-            return false
-        end
-        for _, _ in pairs(t) do
-            return false
-        end
+        process_table(parameter_list)
         return true
     end
 
-    function utils.iterate_keys(t)
-        local a, b, c = pairs(t)
-        return function()
-            c = a(b, c)
-            return c
-        end
-    end
-
-    function utils.create_keys_table(t)
-        local retval = {}
-        for k, _ in pairsbykeys(t) do
-            table.insert(retval, k)
-        end
-        return retval
-    end
-
-    function utils.create_lookup_table(t)
-        local lookup = {}
-        for _, v in pairs(t) do
-            lookup[v] = true
-        end
-        return lookup
-    end
-
-    function utils.round(value, places)
-        places = places or 0
-        local multiplier = 10^places
-        local ret = math.floor(value * multiplier + 0.5)
-
-        return places == 0 and ret or ret / multiplier
-    end
-
-    function utils.to_integer_if_whole(value)
-        local int = math.floor(value)
-        return value == int and int or value
-    end
-
-    function utils.calc_roman_numeral(num)
-        local thousands = {'M','MM','MMM'}
-        local hundreds = {'C','CC','CCC','CD','D','DC','DCC','DCCC','CM'}
-        local tens = {'X','XX','XXX','XL','L','LX','LXX','LXXX','XC'}	
-        local ones = {'I','II','III','IV','V','VI','VII','VIII','IX'}
-        local roman_numeral = ''
-        if math.floor(num/1000)>0 then roman_numeral = roman_numeral..thousands[math.floor(num/1000)] end
-        if math.floor((num%1000)/100)>0 then roman_numeral=roman_numeral..hundreds[math.floor((num%1000)/100)] end
-        if math.floor((num%100)/10)>0 then roman_numeral=roman_numeral..tens[math.floor((num%100)/10)] end
-        if num%10>0 then roman_numeral = roman_numeral..ones[num%10] end
-        return roman_numeral
-    end
-
-    function utils.calc_ordinal(num)
-        local units = num % 10
-        local tens = num % 100
-        if units == 1 and tens ~= 11 then
-            return num .. "st"
-        elseif units == 2 and tens ~= 12 then
-            return num .. "nd"
-        elseif units == 3 and tens ~= 13 then
-            return num .. "rd"
-        end
-        return num .. "th"
-    end
-
-    function utils.calc_alphabet(num)
-        local letter = ((num - 1) % 26) + 1
-        local n = math.floor((num - 1) / 26)
-        return string.char(64 + letter) .. (n > 0 and n or "")
-    end
-
-    function utils.clamp(num, minimum, maximum)
-        return math.min(math.max(num, minimum), maximum)
-    end
-
-    function utils.ltrim(str)
-        return string.match(str, "^%s*(.*)")
-    end
-
-    function utils.rtrim(str)
-        return string.match(str, "(.-)%s*$")
-    end
-
-    function utils.trim(str)
-        return utils.ltrim(utils.rtrim(str))
-    end
-
-    local pcall_wrapper
-    local rethrow_placeholder = "tryfunczzz"
-    local pcall_line = debug.getinfo(1, "l").currentline + 2
-    function utils.call_and_rethrow(levels, tryfunczzz, ...)
-        return pcall_wrapper(levels, pcall(function(...) return 1, tryfunczzz(...) end, ...))
-
-    end
-
-    local source = debug.getinfo(1, "S").source
-    local source_is_file = source:sub(1, 1) == "@"
-    if source_is_file then
-        source = source:sub(2)
-    end
-
-    pcall_wrapper = function(levels, success, result, ...)
-        if not success then
-            local file
-            local line
-            local msg
-            file, line, msg = result:match("([a-zA-Z]-:?[^:]+):([0-9]+): (.+)")
-            msg = msg or result
-            local file_is_truncated = file and file:sub(1, 3) == "..."
-            file = file_is_truncated and file:sub(4) or file
-
-
-
-            if file
-                and line
-                and source_is_file
-                and (file_is_truncated and source:sub(-1 * file:len()) == file or file == source)
-                and tonumber(line) == pcall_line
-            then
-                local d = debug.getinfo(levels, "n")
-
-                msg = msg:gsub("'" .. rethrow_placeholder .. "'", "'" .. (d.name or "") .. "'")
-
-                if d.namewhat == "method" then
-                    local arg = msg:match("^bad argument #(%d+)")
-                    if arg then
-                        msg = msg:gsub("#" .. arg, "#" .. tostring(tonumber(arg) - 1), 1)
-                    end
-                end
-                error(msg, levels + 1)
-
-
-            else
-                error(result, 0)
-            end
-        end
-        return ...
-    end
-
-    function utils.rethrow_placeholder()
-        return "'" .. rethrow_placeholder .. "'"
-    end
-
-    function utils.show_notes_dialog(parent, caption, width, height)
-        if not finaleplugin.RTFNotes and not finaleplugin.Notes then
-            return
-        end
-        if parent and (type(parent) ~= "userdata" or not parent.ExecuteModal) then
-            error("argument 1 must be nil or an instance of FCResourceWindow", 2)
-        end
-        local function dedent(input)
-            local first_line_indent = input:match("^(%s*)")
-            local pattern = "\n" .. string.rep(" ", #first_line_indent)
-            local result = input:gsub(pattern, "\n")
-            result = result:gsub("^%s+", "")
-            return result
-        end
-        local function replace_font_sizes(rtf)
-            local font_sizes_json  = rtf:match("{\\info%s*{\\comment%s*(.-)%s*}}")
-            if font_sizes_json then
-                local cjson = require("cjson.safe")
-                local font_sizes = cjson.decode('{' .. font_sizes_json .. '}')
-                if font_sizes and font_sizes.os then
-                    local this_os = finenv.UI():IsOnWindows() and 'win' or 'mac'
-                    if (font_sizes.os == this_os) then
-                        rtf = rtf:gsub("fs%d%d", font_sizes)
-                    end
-                end
-            end
-            return rtf
-        end
-        if not caption then
-            caption = plugindef():gsub("%.%.%.", "")
-            if finaleplugin.Version then
-                local version = finaleplugin.Version
-                if string.sub(version, 1, 1) ~= "v" then
-                    version = "v" .. version
-                end
-                caption = string.format("%s %s", caption, version)
-            end
-        end
-        if finenv.MajorVersion == 0 and finenv.MinorVersion < 68 and finaleplugin.Notes then
-            finenv.UI():AlertInfo(dedent(finaleplugin.Notes), caption)
+    function configuration.get_parameters(file_name, parameter_list)
+        local path
+        if finenv.IsRGPLua then
+            path = finenv.RunningLuaFolderPath()
         else
-            local notes = dedent(finaleplugin.RTFNotes or finaleplugin.Notes)
-            if finaleplugin.RTFNotes then
-                notes = replace_font_sizes(notes)
-            end
-            width = width or 500
-            height = height or 350
-
-            local dlg = finale.FCCustomLuaWindow()
-            dlg:SetTitle(finale.FCString(caption))
-            local edit_text = dlg:CreateTextEditor(10, 10)
-            edit_text:SetWidth(width)
-            edit_text:SetHeight(height)
-            edit_text:SetUseRichText(finaleplugin.RTFNotes)
-            edit_text:SetReadOnly(true)
-            edit_text:SetWordWrap(true)
-            local ok = dlg:CreateOkButton()
-            dlg:RegisterInitWindow(
-                function()
-                    local notes_str = finale.FCString(notes)
-                    if edit_text:GetUseRichText() then
-                        edit_text:SetRTFString(notes_str)
-                    else
-                        local edit_font = finale.FCFontInfo()
-                        edit_font.Name = "Arial"
-                        edit_font.Size = finenv.UI():IsOnWindows() and 9 or 12
-                        edit_text:SetFont(edit_font)
-                        edit_text:SetText(notes_str)
-                    end
-                    edit_text:ResetColors()
-                    ok:SetKeyboardFocus()
-                end)
-            dlg:ExecuteModal(parent)
+            local str = finale.FCString()
+            str:SetRunningLuaFolderPath()
+            path = str.LuaString
         end
+        local file_path = path .. script_settings_dir .. path_delimiter .. file_name
+        return get_parameters_from_file(file_path, parameter_list)
     end
 
-    function utils.win_mac(windows_value, mac_value)
+
+    local calc_preferences_filepath = function(script_name)
+        local str = finale.FCString()
+        str:SetUserOptionsPath()
+        local folder_name = str.LuaString
+        if not finenv.IsRGPLua and finenv.UI():IsOnMac() then
+
+            folder_name = os.getenv("HOME") .. folder_name:sub(2)
+        end
         if finenv.UI():IsOnWindows() then
-            return windows_value
+            folder_name = folder_name .. path_delimiter .. "FinaleLua"
         end
-        return mac_value
+        local file_path = folder_name .. path_delimiter
+        if finenv.UI():IsOnMac() then
+            file_path = file_path .. "com.finalelua."
+        end
+        file_path = file_path .. script_name .. ".settings.txt"
+        return file_path, folder_name
     end
-    return utils
+
+    function configuration.save_user_settings(script_name, parameter_list)
+        local file_path, folder_path = calc_preferences_filepath(script_name)
+        local file = io.open(file_path, "w")
+        if not file and finenv.UI():IsOnWindows() then
+
+            local osutils = finenv.EmbeddedLuaOSUtils and require("luaosutils")
+            if osutils then
+                osutils.process.make_dir(folder_path)
+            else
+                os.execute('mkdir "' .. folder_path ..'"')
+            end
+            file = io.open(file_path, "w")
+        end
+        if not file then
+            return false
+        end
+        file:write("-- User settings for " .. script_name .. ".lua\n\n")
+        for k,v in pairs(parameter_list) do
+            if type(v) == "string" then
+                v = "\"" .. v .."\""
+            else
+                v = tostring(v)
+            end
+            file:write(k, " = ", v, "\n")
+        end
+        file:close()
+        return true
+    end
+
+    function configuration.get_user_settings(script_name, parameter_list, create_automatically)
+        if create_automatically == nil then create_automatically = true end
+        local exists = get_parameters_from_file(calc_preferences_filepath(script_name), parameter_list)
+        if not exists and create_automatically then
+            configuration.save_user_settings(script_name, parameter_list)
+        end
+        return exists
+    end
+    return configuration
 end
 package.preload["library.client"] = package.preload["library.client"] or function()
 
@@ -5508,300 +4929,489 @@ package.preload["library.general_library"] = package.preload["library.general_li
     end
     return library
 end
+package.preload["library.utils"] = package.preload["library.utils"] or function()
+
+    local utils = {}
+
+
+
+
+    function utils.copy_table(t, to_table, overwrite)
+        overwrite = (overwrite == nil) and true or false
+        if type(t) == "table" then
+            local new = type(to_table) == "table" and to_table or {}
+            for k, v in pairs(t) do
+                local new_key = utils.copy_table(k)
+                local new_value = utils.copy_table(v)
+                if overwrite then
+                    new[new_key] = new_value
+                else
+                    new[new_key] = new[new_key] == nil and new_value or new[new_key]
+                end
+            end
+            setmetatable(new, utils.copy_table(getmetatable(t)))
+            return new
+        else
+            return t
+        end
+    end
+
+    function utils.table_remove_first(t, value)
+        for k = 1, #t do
+            if t[k] == value then
+                table.remove(t, k)
+                return
+            end
+        end
+    end
+
+    function utils.table_is_empty(t)
+        if type(t) ~= "table" then
+            return false
+        end
+        for _, _ in pairs(t) do
+            return false
+        end
+        return true
+    end
+
+    function utils.iterate_keys(t)
+        local a, b, c = pairs(t)
+        return function()
+            c = a(b, c)
+            return c
+        end
+    end
+
+    function utils.create_keys_table(t)
+        local retval = {}
+        for k, _ in pairsbykeys(t) do
+            table.insert(retval, k)
+        end
+        return retval
+    end
+
+    function utils.create_lookup_table(t)
+        local lookup = {}
+        for _, v in pairs(t) do
+            lookup[v] = true
+        end
+        return lookup
+    end
+
+    function utils.round(value, places)
+        places = places or 0
+        local multiplier = 10^places
+        local ret = math.floor(value * multiplier + 0.5)
+
+        return places == 0 and ret or ret / multiplier
+    end
+
+    function utils.to_integer_if_whole(value)
+        local int = math.floor(value)
+        return value == int and int or value
+    end
+
+    function utils.calc_roman_numeral(num)
+        local thousands = {'M','MM','MMM'}
+        local hundreds = {'C','CC','CCC','CD','D','DC','DCC','DCCC','CM'}
+        local tens = {'X','XX','XXX','XL','L','LX','LXX','LXXX','XC'}	
+        local ones = {'I','II','III','IV','V','VI','VII','VIII','IX'}
+        local roman_numeral = ''
+        if math.floor(num/1000)>0 then roman_numeral = roman_numeral..thousands[math.floor(num/1000)] end
+        if math.floor((num%1000)/100)>0 then roman_numeral=roman_numeral..hundreds[math.floor((num%1000)/100)] end
+        if math.floor((num%100)/10)>0 then roman_numeral=roman_numeral..tens[math.floor((num%100)/10)] end
+        if num%10>0 then roman_numeral = roman_numeral..ones[num%10] end
+        return roman_numeral
+    end
+
+    function utils.calc_ordinal(num)
+        local units = num % 10
+        local tens = num % 100
+        if units == 1 and tens ~= 11 then
+            return num .. "st"
+        elseif units == 2 and tens ~= 12 then
+            return num .. "nd"
+        elseif units == 3 and tens ~= 13 then
+            return num .. "rd"
+        end
+        return num .. "th"
+    end
+
+    function utils.calc_alphabet(num)
+        local letter = ((num - 1) % 26) + 1
+        local n = math.floor((num - 1) / 26)
+        return string.char(64 + letter) .. (n > 0 and n or "")
+    end
+
+    function utils.clamp(num, minimum, maximum)
+        return math.min(math.max(num, minimum), maximum)
+    end
+
+    function utils.ltrim(str)
+        return string.match(str, "^%s*(.*)")
+    end
+
+    function utils.rtrim(str)
+        return string.match(str, "(.-)%s*$")
+    end
+
+    function utils.trim(str)
+        return utils.ltrim(utils.rtrim(str))
+    end
+
+    local pcall_wrapper
+    local rethrow_placeholder = "tryfunczzz"
+    local pcall_line = debug.getinfo(1, "l").currentline + 2
+    function utils.call_and_rethrow(levels, tryfunczzz, ...)
+        return pcall_wrapper(levels, pcall(function(...) return 1, tryfunczzz(...) end, ...))
+
+    end
+
+    local source = debug.getinfo(1, "S").source
+    local source_is_file = source:sub(1, 1) == "@"
+    if source_is_file then
+        source = source:sub(2)
+    end
+
+    pcall_wrapper = function(levels, success, result, ...)
+        if not success then
+            local file
+            local line
+            local msg
+            file, line, msg = result:match("([a-zA-Z]-:?[^:]+):([0-9]+): (.+)")
+            msg = msg or result
+            local file_is_truncated = file and file:sub(1, 3) == "..."
+            file = file_is_truncated and file:sub(4) or file
+
+
+
+            if file
+                and line
+                and source_is_file
+                and (file_is_truncated and source:sub(-1 * file:len()) == file or file == source)
+                and tonumber(line) == pcall_line
+            then
+                local d = debug.getinfo(levels, "n")
+
+                msg = msg:gsub("'" .. rethrow_placeholder .. "'", "'" .. (d.name or "") .. "'")
+
+                if d.namewhat == "method" then
+                    local arg = msg:match("^bad argument #(%d+)")
+                    if arg then
+                        msg = msg:gsub("#" .. arg, "#" .. tostring(tonumber(arg) - 1), 1)
+                    end
+                end
+                error(msg, levels + 1)
+
+
+            else
+                error(result, 0)
+            end
+        end
+        return ...
+    end
+
+    function utils.rethrow_placeholder()
+        return "'" .. rethrow_placeholder .. "'"
+    end
+
+    function utils.show_notes_dialog(parent, caption, width, height)
+        if not finaleplugin.RTFNotes and not finaleplugin.Notes then
+            return
+        end
+        if parent and (type(parent) ~= "userdata" or not parent.ExecuteModal) then
+            error("argument 1 must be nil or an instance of FCResourceWindow", 2)
+        end
+        local function dedent(input)
+            local first_line_indent = input:match("^(%s*)")
+            local pattern = "\n" .. string.rep(" ", #first_line_indent)
+            local result = input:gsub(pattern, "\n")
+            result = result:gsub("^%s+", "")
+            return result
+        end
+        local function replace_font_sizes(rtf)
+            local font_sizes_json  = rtf:match("{\\info%s*{\\comment%s*(.-)%s*}}")
+            if font_sizes_json then
+                local cjson = require("cjson.safe")
+                local font_sizes = cjson.decode('{' .. font_sizes_json .. '}')
+                if font_sizes and font_sizes.os then
+                    local this_os = finenv.UI():IsOnWindows() and 'win' or 'mac'
+                    if (font_sizes.os == this_os) then
+                        rtf = rtf:gsub("fs%d%d", font_sizes)
+                    end
+                end
+            end
+            return rtf
+        end
+        if not caption then
+            caption = plugindef():gsub("%.%.%.", "")
+            if finaleplugin.Version then
+                local version = finaleplugin.Version
+                if string.sub(version, 1, 1) ~= "v" then
+                    version = "v" .. version
+                end
+                caption = string.format("%s %s", caption, version)
+            end
+        end
+        if finenv.MajorVersion == 0 and finenv.MinorVersion < 68 and finaleplugin.Notes then
+            finenv.UI():AlertInfo(dedent(finaleplugin.Notes), caption)
+        else
+            local notes = dedent(finaleplugin.RTFNotes or finaleplugin.Notes)
+            if finaleplugin.RTFNotes then
+                notes = replace_font_sizes(notes)
+            end
+            width = width or 500
+            height = height or 350
+
+            local dlg = finale.FCCustomLuaWindow()
+            dlg:SetTitle(finale.FCString(caption))
+            local edit_text = dlg:CreateTextEditor(10, 10)
+            edit_text:SetWidth(width)
+            edit_text:SetHeight(height)
+            edit_text:SetUseRichText(finaleplugin.RTFNotes)
+            edit_text:SetReadOnly(true)
+            edit_text:SetWordWrap(true)
+            local ok = dlg:CreateOkButton()
+            dlg:RegisterInitWindow(
+                function()
+                    local notes_str = finale.FCString(notes)
+                    if edit_text:GetUseRichText() then
+                        edit_text:SetRTFString(notes_str)
+                    else
+                        local edit_font = finale.FCFontInfo()
+                        edit_font.Name = "Arial"
+                        edit_font.Size = finenv.UI():IsOnWindows() and 9 or 12
+                        edit_text:SetFont(edit_font)
+                        edit_text:SetText(notes_str)
+                    end
+                    edit_text:ResetColors()
+                    ok:SetKeyboardFocus()
+                end)
+            dlg:ExecuteModal(parent)
+        end
+    end
+
+    function utils.win_mac(windows_value, mac_value)
+        if finenv.UI():IsOnWindows() then
+            return windows_value
+        end
+        return mac_value
+    end
+    return utils
+end
 function plugindef()
-    finaleplugin.RequireSelection = false
-    finaleplugin.HandlesUndo = true
-    finaleplugin.Author = "Jacob Winkler, Nick Mazuk & Carl Vine"
-    finaleplugin.AuthorEmail = "jacob.winkler@mac.com"
+    finaleplugin.RequireScore = true
+    finaleplugin.RequireSelection = true
+    finaleplugin.RequireDocument = true
+    finaleplugin.Author = "Aaron Sherber"
+    finaleplugin.AuthorURL = "https://aaron.sherber.com"
     finaleplugin.Copyright = "CC0 https://creativecommons.org/publicdomain/zero/1.0/"
-    finaleplugin.Version = "1.36"
-    finaleplugin.Date = "2024-04-17"
-    finaleplugin.MinJWLuaVersion = 0.70
-    finaleplugin.CategoryTags = "Pitch, Transposition"
-    finaleplugin.Notes = [[
-        Select a note within each chord to either keep or delete, 
-        numbered from either the top or bottom of each chord. 
-
-        - __1__ deletes (or keeps) the top (or bottom) note 
-        - __2__ deletes (or keeps) the 2nd note from the top (or bottom) 
-        - etc. ...
-
-        > If __Note Number__ or __Layer__ are highlighted  
-        > then these __Key Commands__ are available:
-
-        > - __z__: toggle keep/delete 
-        > - __x__: toggle top/bottom 
-        > - __c__: toggle "Modeless"
-        > - __q__: show these notes 
-        > - __1__-__9__: note number 
-        > - __0__-__4__: layer number 
-        > - (delete key not needed for number entry) 
-
-        Select __Modeless__ if you prefer the dialog window to 
-        "float" above your score and you can change the score selection 
-        while it's active. In this mode, click __Apply__ [Return] 
-        to make changes and __Cancel__ [Escape] to close the window. 
-        Cancelling __Modeless__ will apply the _next_ time you use the script.
-
-        To repeat the last action without a confirmation dialog 
-        hold down [Shift] when starting the script. 
+    finaleplugin.Version = "1.0.1"
+    finaleplugin.Date = "2024-05-07"
+    finaleplugin.Id = "1fef3a2d-42c3-4ab1-a75a-6f245c6b5ec2" 
+    finaleplugin.MinJWLuaVersion = 0.71
+    finaleplugin.RevisionNotes = [[
+        v1.0.1      First release
     ]]
+    finaleplugin.Notes = [[
+        This script will insert or delete one or more measures; it will then adjust the start and
     finaleplugin.RTFNotes = [[
         {\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier New;}}
         {\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
         \widowctrl\hyphauto
         \fs18
         {\info{\comment "os":"mac","fs18":"fs24","fs26":"fs32","fs23":"fs29","fs20":"fs26"}}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 Select a note within each chord to either keep or delete, numbered from either the top or bottom of each chord.\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab {\b 1} deletes (or keeps) the top (or bottom) note\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab {\b 2} deletes (or keeps) the 2nd note from the top (or bottom)\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab etc. \u8230?\sa180\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li720 \fi0 If {\b Note Number} or {\b Layer} are highlighted\line then these {\b Key Commands} are available:\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b z}: toggle keep/delete\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b x}: toggle top/bottom\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b c}: toggle \u8220"Modeless\u8221"\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b q}: show these notes\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b 1}-{\b 9}: note number\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab {\b 0}-{\b 4}: layer number\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li1080 \fi-360 \bullet \tx360\tab (delete key not needed for number entry)\sa180\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 Select {\b Modeless} if you prefer the dialog window to \u8220"float\u8221" above your score and you can change the score selection while it\u8217's active. In this mode, click {\b Apply} [Return] to make changes and {\b Cancel} [Escape] to close the window. Cancelling {\b Modeless} will apply the {\i next} time you use the script.\par}
-        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 To repeat the last action without a confirmation dialog hold down [Shift] when starting the script.\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 This script will insert or delete one or more measures; it will then adjust the start and end measures of the current and subsequent measure number regions.\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 It can also optionally:\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Adjust the start numbers of subsequent numeric regions\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Adjust the numeric prefixes of subsequent regions\sa180\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 For example, given three measure regions {\f1 1-5, 5A-5B, 6-10}, if two measures are inserted into the first region and both optional adjustments are enabled, the regions will then look like {\f1 1-7, 7A-7B, 8-12}.\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 The script will stop adjusting start numbers and numeric prefixes if it encounters a region with a numeric start number of 1 (indicating a new movement).\par}
+        {\pard \sl264 \slmult1 \ql \f0 \sa180 \li0 \fi0 {\b Note:} At the moment, the script will only delete measures which sit within a single measure region.\par}
         }
     ]]
-    finaleplugin.HashURL = "https://raw.githubusercontent.com/finale-lua/lua-scripts/master/hash/pitch_entry_keep_delete.hash"
-    return "Pitch: Chord Notes Keep-Delete...",
-        "Pitch: Chord Notes Keep-Delete",
-        "Keep or Delete selected notes from chords"
+    finaleplugin.HashURL = "https://raw.githubusercontent.com/finale-lua/lua-scripts/master/hash/measure_insert_and_shift_regions.hash"
+        end measures of the current and subsequent measure number regions. 
+
+        It can also optionally:
+
+        - Adjust the start numbers of subsequent numeric regions
+        - Adjust the numeric prefixes of subsequent regions
+
+        For example, given three measure regions `1-5, 5A-5B, 6-10`, if two measures are
+        inserted into the first region and both optional adjustments are enabled, the regions
+        will then look like `1-7, 7A-7B, 8-12`.
+
+        The script will stop adjusting start numbers and numeric prefixes
+        if it encounters a region with a numeric start number of 1 (indicating a new movement).
+
+        **Note:** At the moment, the script will only delete measures which sit within a 
+        single measure region.
+    ]]
+    finaleplugin.AdditionalMenuOptions = [[
+        Delete Measures and Shift Regions...
+    ]]
+    finaleplugin.AdditionalUndoText = [[
+        Delete Measures and Shift Regions
+    ]]
+    finaleplugin.AdditionalDescriptions = [[
+        Deletes one or more measures and adjusts measure number regions
+    ]]
+    finaleplugin.AdditionalPrefixes = [[
+        mode = "Delete"
+    ]]    
+
+    return "Insert Measures and Shift Regions...", "Insert Measures and Shift Regions", 
+        "Inserts one or more measures and adjusts measure number regions"
 end
-local configuration = require("library.configuration")
-local note_entry = require("library.note_entry")
-local mixin = require("library.mixin")
-local utils = require("library.utils")
-local library = require("library.general_library")
-local script_name = library.calc_script_name()
-local refocus_document = false
-local selection
-local saved_bounds = {}
-local bounds = {
-    "StartStaff", "StartMeasure", "StartMeasurePos",
-    "EndStaff",   "EndMeasure",   "EndMeasurePos",
+local INSERT <const> = "Insert"
+local DELETE <const> = "Delete"
+mode = mode or INSERT
+local mixin <const> = require("library.mixin")
+local configuration <const> = require("library.configuration")
+local library <const> = require("library.general_library")
+local utils <const> = require("library.utils")
+local config <const> = {
+    adjust_start_number = 1,
+    adjust_prefix = 1,
+    number_of_measures = 0,
 }
-local hotkey = {
-    keep_delete = "z",
-    direction   = "x",
-    modeless    = "c",
-    show_info   = "q",
-}
-local config = {
-    number      = 1,
-    direction   = 0,
-    keep_delete = 0,
-    layer       = 0,
-    timer_id    = 1,
-    modeless    = false,
-    window_pos_x = false,
-    window_pos_y = false,
-}
-local function dialog_set_position(dialog)
-    if config.window_pos_x and config.window_pos_y then
-        dialog:StorePosition()
-        dialog:SetRestorePositionOnlyData(config.window_pos_x, config.window_pos_y)
-        dialog:RestorePosition()
+local script_name <const> = library.calc_script_name()
+configuration.get_user_settings(script_name, config)
+local function confirm_options()
+    config.number_of_measures = finenv.Region():CalcMeasureSpan()
+    local dialog <const> = mixin.FCMCustomLuaWindow()
+        :SetTitle(mode .. " Measures and Shift Regions")
+    local max_length = 0
+    local function add_checkbox(text, name)
+        max_length = math.max(max_length, #text)
+        return dialog:CreateCheckbox(0, dialog.Count * 17 - 8, name)
+            :DoAutoResizeWidth()
+            :SetText(text)
+            :SetCheck(config[name])
+            :AddHandleCheckChange(function(ctrl)
+                config[name] = ctrl:GetCheck()
+            end)
     end
-end
-local function dialog_save_position(dialog)
-    dialog:StorePosition()
-    config.window_pos_x = dialog.StoredX
-    config.window_pos_y = dialog.StoredY
-    configuration.save_user_settings(script_name, config)
-end
-local function get_staff_name(staff_num)
-    local staff = finale.FCStaff()
-    staff:Load(staff_num)
-    local str = staff:CreateDisplayAbbreviatedNameString().LuaString
-    if not str or str == "" then
-        str = "Staff" .. staff_num
-    end
-    return str
-end
-local function initialise_parameters()
-
-    local rgn = finenv.Region()
-    for _, property in ipairs(bounds) do
-        saved_bounds[property] = rgn:IsEmpty() and 0 or rgn[property]
-    end
-
-    selection = "no staff, no selection"
-    if not rgn:IsEmpty() then
-
-        selection = get_staff_name(rgn.StartStaff)
-        if rgn.EndStaff ~= rgn.StartStaff then
-            selection = selection .. "-" .. get_staff_name(rgn.EndStaff)
-        end
-
-        selection = selection .. " " .. "m" .. rgn.StartMeasure
-        if rgn.EndMeasure ~= rgn.StartMeasure then
-            selection = selection .. "-" .. rgn.EndMeasure
-        end
-    end
-end
-local function make_changes()
-    finenv.StartNewUndoBlock(
-        string.format("Pitch %s %s%d %s",
-            (config.keep_delete == 0 and "Keep" or "Delete"),
-            (config.direction == 0 and "Top" or "Bot"),
-             config.number, selection
-        )
-    )
-    for entry in eachentrysaved(finenv.Region(), config.layer) do
-        if (entry.Count >= 2) then
-            local n = config.number
-            local target = (config.direction == 0) and (n - 1) or (entry.Count - n)
-            local i = 0
-            for note in eachbackwards(entry) do
-                if      (i == target and config.keep_delete == 1)
-                    or  (i ~= target and config.keep_delete == 0) then
-                    note_entry.delete_note(note)
-                end
-                i = i + 1
+    dialog:CreateStatic(0, 0)
+        :SetText('Number of Measures')
+    dialog:CreateEdit(108, 0)
+        :SetWidth(35)
+        :SetHeight(17)
+        :SetInteger(config.number_of_measures)
+        :AddHandleChange(function(ctrl, last_value)
+            local value <const> = ctrl:GetText()
+            if not value:match("^%d+$") then
+                ctrl:SetText(last_value)
+            else
+                config.number_of_measures = ctrl:GetInteger()
             end
-        end
-    end
-    finenv.EndUndoBlock(true)
-    finenv.Region():Redraw()
-end
-local function run_the_dialog()
-    local x, y, tag_wide = 84, 3, 23
-    local y_offset = finenv.UI():IsOnMac() and 3 or 0
-    local answer = {}
-    local saved = { number = config.number, layer = config.layer }
-    local name = plugindef():gsub("%.%.%.", "")
-    local dialog = mixin.FCXCustomLuaWindow():SetTitle(name:sub(1, 18))
-
-        local function cs(dx, dy, title, width)
-            return dialog:CreateStatic(dx, dy):SetText(title):SetWidth(width)
-        end
-        local function show_info()
-            utils.show_notes_dialog(dialog, "About " .. name, 400, 375)
-            refocus_document = true
-        end
-        local function flip_radio(id)
-            local n = answer[id]:GetSelectedItem()
-            answer[id]:SetSelectedItem((n + 1) % 2)
-        end
-        local function key_check(id)
-            local ctl = answer[id]
-            local s = ctl:GetText():lower()
-            if     (id == "number" and s:find("[^1-9]") )
-                or (id == "layer" and s:find("[^0-4]"))
-                    then
-                if     s:find(hotkey.keep_delete)  then flip_radio("keep_delete")
-                elseif s:find(hotkey.direction) then flip_radio("direction")
-                elseif s:find(hotkey.show_info) then show_info()
-                elseif s:find(hotkey.modeless)  then
-                    local m = answer.modeless:GetCheck()
-                    answer.modeless:SetCheck((m + 1) % 2)
-                end
-            elseif s ~= "" then
-                saved[id] = s:sub(-1)
-            end
-            ctl:SetText(saved[id]):SetKeyboardFocus()
-        end
-        local function on_timer()
-            for k, v in pairs(saved_bounds) do
-                if finenv.Region()[k] ~= v then
-                    initialise_parameters()
-                    answer.info:SetText(selection)
-                    break
-                end
-            end
-        end
-
-    cs(10, y, name:sub(8):upper(), x + 95)
-    y = y + 20
-    answer.a = cs(0, y, "Note Number:", x)
-    answer.number = dialog:CreateEdit(x, y - y_offset):SetInteger(config.number)
-        :AddHandleCommand(function() key_check("number") end):SetWidth(20)
-    answer.b = cs(x + 42, y, "Layer:", 40)
-    answer.layer = dialog:CreateEdit(x + 82, y - y_offset):SetInteger(config.layer)
-        :AddHandleCommand(function() key_check("layer") end):SetWidth(20)
-    y = y + 25
-
-    local titles = { {"Keep", "Delete"}, {"From Top", "From Bottom"} }
-    local tags   = {  hotkey.keep_delete,   hotkey.direction }
-    local labels = finale.FCStrings()
-    labels:CopyFromStringTable(titles[1])
-    answer.keep_delete = dialog:CreateRadioButtonGroup(0, y, 2)
-        :SetText(labels):SetWidth(x - 25)
-        :SetSelectedItem(config.keep_delete)
-    cs(x - 28, y + 5, "(" .. tags[1] .. ")", tag_wide)
-    labels:CopyFromStringTable(titles[2])
-    answer.direction = dialog:CreateRadioButtonGroup(x, y, 2)
-        :SetText(labels):SetWidth(85)
-        :SetSelectedItem(config.direction)
-    cs(x + 85, y + 5, "(" .. tags[2] .. ")", tag_wide)
-    y = y + 35
-    answer.modeless = dialog:CreateCheckbox(0, y):SetWidth(x + 80)
-        :SetCheck(config.modeless and 1 or 0):SetText("\"Modeless\" Dialog")
-    answer.q = dialog:CreateButton(x + 82, y):SetText("?"):SetWidth(20)
-        :AddHandleCommand(function() show_info() end)
-    if config.modeless then
-        y = y + 17
-        answer.info = cs(0, y, selection, x + 105)
-    end
-
-    dialog:CreateOkButton():SetText(config.modeless and "Apply" or "OK")
+        end)
+    local xment <const> = mode:sub(1, 2) .. "crement"
+    add_checkbox(xment .. " numeric start numbers for following regions", "adjust_start_number")
+        :AddHandleCheckChange(function(source)
+            local target = dialog:GetControl("adjust_prefix")
+            target:SetEnable(source:GetCheck() == 1)
+            if not target:GetEnable() then target:SetCheck(0) end
+        end)
+    add_checkbox(xment .. " numeric prefixes for following regions", "adjust_prefix")
+        :SetEnable(config.adjust_start_number == 1)
+    dialog:CreateButton(0, dialog.Count * 17 + 6)
+        :SetText("?")
+        :DoAutoResizeWidth(0)
+        :AddHandleCommand(function() utils.show_notes_dialog(dialog) end)
+    dialog:CreateOkButton()
     dialog:CreateCancelButton()
-    dialog_set_position(dialog)
-    if config.modeless then dialog:RegisterHandleTimer(on_timer) end
-    dialog:RegisterInitWindow(function(self)
-        self:SetOkButtonCanClose(not config.modeless)
-        if config.modeless then self:SetTimer(config.timer_id, 125) end
-        local bold = answer.a:CreateFontInfo():SetBold(true)
-        answer.a:SetFont(bold)
-        answer.b:SetFont(bold)
-        answer.q:SetFont(bold)
-        answer.number:SetKeyboardFocus()
-    end)
-    local change_mode = false
-    dialog:RegisterHandleOkButtonPressed(function()
-        config.number = answer.number:GetInteger()
-        config.layer = answer.layer:GetInteger()
-        config.direction = answer.direction:GetSelectedItem()
-        config.keep_delete = answer.keep_delete:GetSelectedItem()
-        make_changes()
-    end)
-    dialog:RegisterCloseWindow(function(self)
-        if config.modeless then self:StopTimer(config.timer_id) end
-        local mode = (answer.modeless:GetCheck() == 1)
-        change_mode = (mode and not config.modeless)
-        config.modeless = mode
-        dialog_save_position(self)
-    end)
-    if config.modeless then
-        dialog:RunModeless()
-    else
-        dialog:ExecuteModal()
-        if refocus_document then finenv.UI():ActivateDocumentWindow() end
+    local result <const> = dialog:ExecuteModal() == finale.EXECMODAL_OK
+    if result then
+        configuration.save_user_settings(script_name, config)
     end
-    return change_mode
+    return result
 end
-local function keep_delete()
-    configuration.get_user_settings(script_name, config, true)
-    if not config.modeless and finenv.Region():IsEmpty() then
-        finenv.UI():AlertError(
-            "Please select some music\nbefore running this script.",
-            finaleplugin.ScriptGroupName
-        )
-        return
+local function document_measure_count()
+    local region <const> = finale.FCMusicRegion()
+    region:SetFullDocument()
+    return region:CalcMeasureSpan()
+end
+local function get_end_measure(start_measure, count)
+    return start_measure + count - 1
+end
+local function measures_span_regions(start_measure, count)
+    for r in loadall(finale.FCMeasureNumberRegions()) do
+        if r:IsMeasureIncluded(start_measure) ~= r:IsMeasureIncluded(get_end_measure(start_measure, count)) then
+            return true
+        end
     end
-    local qim = finenv.QueryInvokedModifierKeys
-    local mod_key = qim and (qim(finale.CMDMODKEY_ALT) or qim(finale.CMDMODKEY_SHIFT))
-    initialise_parameters()
-    if mod_key then
-        make_changes()
+    return false
+end
+local function measure_regions_in_document_order()
+    local all_regions <const> = finale.FCMeasureNumberRegions()
+    all_regions:LoadAll()
+    local result <const> = coll2table(all_regions)
+    table.sort(result, function(a, b) return a.StartMeasure < b.StartMeasure end)
+    return result
+end
+local function matches_region(measure_region, start, count)
+    return measure_region.StartMeasure == start
+        and measure_region.EndMeasure == get_end_measure(start, count)
+end
+local function insert_or_delete()
+    local pos <const> = finenv.Region().StartMeasure
+    local measure_count <const> = config.number_of_measures
+    local shift_op
+    if mode == INSERT then
+        if document_measure_count() + measure_count > 32768 then
+            finenv.UI():AlertError("Can't insert that many measures in this document.", "Error")
+            return
+        end
+        finale.FCMeasures.Insert(pos, measure_count, true)
+        shift_op = function(n) return n + measure_count end
     else
-        while run_the_dialog() do end
+        if measures_span_regions(pos, measure_count) then
+            finenv.UI():AlertError("Can't delete measures that span multiple regions.", "Error")
+            return
+        end
+        finale.FCMeasures.Delete(pos, measure_count)
+        shift_op = function(n) return n - measure_count end
+    end
+    local stop_adjusting_start_numbers = false
+    local region_to_delete
+    for _, r in ipairs(measure_regions_in_document_order()) do
+        if mode == DELETE and matches_region(r, pos, measure_count) then
+
+            region_to_delete = r
+            goto continue
+        end
+        if r.StartMeasure > pos then
+            r.StartMeasure = shift_op(r.StartMeasure)
+
+            local is_new_movement <const> = r.NumberingStyle == finale.NUMBERING_DIGITS and r.StartNumber == 1
+            stop_adjusting_start_numbers = stop_adjusting_start_numbers or is_new_movement
+            if config.adjust_start_number == 1  and not stop_adjusting_start_numbers then
+                if r.NumberingStyle == finale.NUMBERING_DIGITS then
+                    r.StartNumber = shift_op(r.StartNumber)
+                elseif config.adjust_prefix == 1 then
+                    local str <const> = finale.FCString()
+                    r:GetPrefix(str)
+                    local prefix <const> = str.LuaString
+                    if tonumber(prefix) then
+                        str.LuaString = shift_op(prefix)
+                        r:SetPrefix(str)
+                    end
+                end
+            end
+        end
+        if r.EndMeasure >= pos then
+            r.EndMeasure = shift_op(r.EndMeasure)
+        end
+        r:Save()
+        ::continue::
+    end
+    if region_to_delete then
+        region_to_delete:DeleteData()
     end
 end
-keep_delete()
+if confirm_options() then
+    insert_or_delete()
+end
